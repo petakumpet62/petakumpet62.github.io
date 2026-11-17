@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0c111b" />
+    <meta name="description" content="Main PETAK, permainan petak umpet dari browser. Buat room, ajak teman, dan mulai bermain bersama." />
+    <link rel="canonical" href="https://petakumpet62.github.io/" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <meta property="og:locale" content="id_ID" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PETAK" />
+    <meta property="og:title" content="PETAK - Permainan Petak Umpet" />
+    <meta property="og:description" content="Main PETAK, permainan petak umpet dari browser. Buat room, ajak teman, dan mulai bermain bersama." />
+    <meta property="og:url" content="https://petakumpet62.github.io/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="PETAK - Permainan Petak Umpet" />
+    <meta name="twitter:description" content="Main PETAK, permainan petak umpet dari browser. Buat room, ajak teman, dan mulai bermain bersama." />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>PETAK - Petak Umpet</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="./assets/pwa/favicon-32.png" />
+    <link rel="apple-touch-icon" href="./assets/pwa/apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="style.css" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "PETAK - Permainan Petak Umpet",
+        "description": "Main PETAK, permainan petak umpet dari browser. Buat room, ajak teman, dan mulai bermain bersama.",
+        "url": "https://petakumpet62.github.io/",
+        "applicationCategory": "GameApplication",
+        "operatingSystem": "Web browser",
+        "inLanguage": "id-ID"
+      }
+    </script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="PETAK, beranda">
+          <img class="brand-mark" src="./mobile/assets/logo-splash.png" alt="" />
+          <span>PETAK</span>
+        </a>
+        <div class="topbar-tag"><span class="live-dot"></span> HIDE &amp; SEEK</div>
+      </header>
+
+      <main>
+        <section class="intro">
+          <p class="eyebrow">Strategi. Sembunyi. Bertahan.</p>
+          <h1>Siap main <span>petak umpet?</span></h1>
+          <p>Buat room dan ajak temanmu, atau gabung dengan kode room mereka.</p>
+        </section>
+
+        <section id="setupPanel" class="panel setup-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Mulai petualangan</p>
+              <h2>Masuk ke permainan</h2>
+            </div>
+            <span class="step-chip"><span>01</span> SIAPKAN ROOM</span>
+          </div>
+
+          <div class="setup-grid">
+            <div class="setup-option">
+              <span class="option-icon" aria-hidden="true">✦</span>
+              <h3>Buat room baru</h3>
+              <p>Jadi host dan undang teman untuk bermain.</p>
+              <label for="playerNameInput">Nama pemain</label>
+              <input id="playerNameInput" type="text" maxlength="24" placeholder="Contoh: Alex" autocomplete="nickname" />
+              <button id="createRoomBtn" class="primary">
+                Buat room <span aria-hidden="true">→</span>
+              </button>
+            </div>
+
+            <div class="setup-divider" aria-hidden="true"><span>ATAU</span></div>
+
+            <div class="setup-option join-box">
+              <span class="option-icon join-icon" aria-hidden="true">↗</span>
+              <h3>Gabung ke room</h3>
+              <p>Sudah punya kode? Langsung masuk ke room teman.</p>
+              <label for="joinCodeInput">Kode room</label>
+              <div class="join-input-row">
+                <input id="joinCodeInput" type="text" maxlength="6" placeholder="ABC123" autocomplete="off" aria-label="Kode room, 6 karakter" />
+                <button id="joinRoomBtn" class="join-button" aria-label="Gabung ke room">Gabung</button>
+              </div>
+              <p class="input-hint">Minta kode 6 karakter dari host.</p>
+            </div>
+          </div>
+          <div class="setup-footnote"><span aria-hidden="true">◎</span> Permainan lebih seru bersama teman</div>
+        </section>
+
+        <section id="lobbyPanel" class="panel hidden">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Room kamu</p>
+              <div class="room-code-row">
+                <h2 id="roomCodeText">------</h2>
+                <button id="copyRoomBtn" class="copy-button" type="button" aria-label="Salin kode room">Salin kode</button>
+              </div>
+              <p class="subtle-copy">Bagikan kode ini ke temanmu.</p>
+            </div>
+            <button id="startGameBtn" class="primary start-button">Mulai permainan <span aria-hidden="true">→</span></button>
+          </div>
+
+          <div class="lobby-card">
+            <div class="list-heading">
+              <h3>Pemain di lobby</h3>
+              <span id="playerCountText" class="count-chip">1 pemain</span>
+            </div>
+            <ul id="playerList" class="player-list" aria-live="polite"></ul>
+            <p id="startGameHint" class="lobby-hint">Ajak setidaknya satu teman sebelum permainan dimulai.</p>
+          </div>
+        </section>
+
+        <section id="gamePanel" class="panel hidden">
+          <div class="game-header">
+            <div>
+              <p class="eyebrow">Status sesi</p>
+              <div class="game-title-row">
+                <h2 id="gameStateText">Menunggu</h2>
+                <span id="gamePhaseBadge" class="phase-badge"><span class="live-dot"></span> LIVE</span>
+              </div>
+            </div>
+            <div class="timer-box">
+              <span>WAKTU TERSISA</span>
+              <strong id="timerText">01:30</strong>
+            </div>
+          </div>
+          <div class="timer-track" role="progressbar" aria-label="Waktu permainan tersisa" aria-valuemin="0" aria-valuemax="90" aria-valuenow="90">
+            <span id="timerProgress"></span>
+          </div>
+
+          <div id="roleCard" class="role-card"></div>
+
+          <div class="board-grid">
+            <div class="card">
+              <div class="list-heading">
+                <h3>Misi kamu</h3>
+                <span class="card-kicker">PROGRES</span>
+              </div>
+              <ul id="missionList" class="mission-list" aria-live="polite"></ul>
+            </div>
+
+            <div class="card action-card">
+              <p class="eyebrow">Langkah berikutnya</p>
+              <h3>Ambil tindakan</h3>
+              <p class="action-description">Pilih aksi untuk membantu timmu.</p>
+              <div id="actionButtons" class="action-buttons"></div>
+            </div>
+          </div>
+
+          <div class="card log-card">
+            <div class="list-heading">
+              <h3>Aktivitas permainan</h3>
+              <span class="card-kicker">TERBARU</span>
+            </div>
+            <ul id="eventLog" class="event-log" aria-live="polite"></ul>
+          </div>
+
+          <div class="footer-actions">
+            <button id="rematchBtn" class="secondary hidden">Main lagi <span aria-hidden="true">↻</span></button>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="appAlert" class="app-alert hidden">
+      <div class="app-alert-backdrop" data-alert-dismiss></div>
+      <section
+        class="app-alert-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="appAlertTitle"
+        aria-describedby="appAlertMessage"
+        tabindex="-1"
+      >
+        <div class="app-alert-icon" aria-hidden="true">!</div>
+        <p class="eyebrow">Pesan PETAK</p>
+        <h2 id="appAlertTitle">Ada yang perlu diperhatikan</h2>
+        <p id="appAlertMessage" class="app-alert-message"></p>
+        <button id="appAlertConfirm" class="primary">Mengerti</button>
+      </section>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./service-worker.js').catch((error) => {
+            console.error('Gagal mengaktifkan cache offline PETAK', error);
+          });
+        }, { once: true });
+      }
+    </script>
+  </body>
+</html>

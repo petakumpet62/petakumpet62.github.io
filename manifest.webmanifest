@@ -1,0 +1,39 @@
+{
+  "name": "Petak Umpet - Warga +62",
+  "short_name": "Ngumpet",
+  "lang": "id-ID",
+  "id": "./",
+  "description": "Buat room dan main petak umpet bersama teman lewat browser.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "categories": ["games"],
+  "background_color": "#0c111b",
+  "theme_color": "#0c111b",
+  "icons": [
+    {
+      "src": "./assets/pwa/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./assets/pwa/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./assets/pwa/maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "./assets/pwa/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

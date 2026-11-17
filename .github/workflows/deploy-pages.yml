@@ -45,6 +45,9 @@ jobs:
         env:
           EXPO_PUBLIC_SOCKET_URL: ${{ vars.EXPO_PUBLIC_SOCKET_URL }}
 
+      - name: Preserve Expo static assets on GitHub Pages
+        run: touch mobile/dist/.nojekyll
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

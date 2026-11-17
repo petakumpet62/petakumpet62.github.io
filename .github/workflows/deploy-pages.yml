@@ -25,21 +25,30 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Build static web app
-        run: |
-          mkdir -p _site/assets/pwa _site/assets/avatars _site/mobile/assets
-          cp index.html app.js style.css manifest.webmanifest service-worker.js _site/
-          cp -R assets/pwa/. _site/assets/pwa/
-          cp assets/avatars/seeker.webp assets/avatars/hider.webp assets/avatars/impostor.webp _site/assets/avatars/
-          cp mobile/assets/logo-splash.png _site/mobile/assets/logo-splash.png
+      - name: Install dependencies
+        run: npm ci
+        working-directory: mobile
+
+      - name: Build core Expo web app
+        run: npx expo export --platform web --output-dir dist
+        working-directory: mobile
+        env:
+          EXPO_PUBLIC_SOCKET_URL: ${{ vars.EXPO_PUBLIC_SOCKET_URL }}
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: _site
+          path: mobile/dist
 
       - name: Deploy to GitHub Pages
         id: deployment

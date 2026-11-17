@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <meta
+      name="description"
+      content="Main PETAK, permainan petak umpet dari browser. Buat room, ajak teman, dan mulai bermain bersama."
+    />
+    <link rel="canonical" href="https://petakumpet62.github.io/" />
+    <meta property="og:locale" content="id_ID" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PETAK" />
+    <meta property="og:title" content="PETAK - Permainan Petak Umpet" />
+    <meta property="og:url" content="https://petakumpet62.github.io/" />
+    <meta
+      property="og:description"
+      content="Main PETAK, permainan petak umpet dari browser. Buat room, ajak teman, dan mulai bermain bersama."
+    />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="PETAK - Permainan Petak Umpet" />
+    <meta
+      name="twitter:description"
+      content="Main PETAK, permainan petak umpet dari browser. Buat room, ajak teman, dan mulai bermain bersama."
+    />
+    <title>PETAK - Permainan Petak Umpet</title>
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/icons/favicon-48.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "PETAK - Permainan Petak Umpet",
+        "description": "Main PETAK, permainan petak umpet dari browser. Buat room, ajak teman, dan mulai bermain bersama.",
+        "url": "https://petakumpet62.github.io/",
+        "applicationCategory": "GameApplication",
+        "operatingSystem": "Web browser",
+        "inLanguage": "id-ID"
+      }
+    </script>
+    <style>
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #0c111b;
+      }
+
+      #root {
+        display: flex;
+        height: 100%;
+        flex: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <noscript>PETAK adalah permainan petak umpet online. Aktifkan JavaScript untuk bermain.</noscript>
+    <div id="root"></div>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/service-worker.js').catch((error) => {
+            console.error('Gagal mengaktifkan dukungan offline PETAK', error);
+          });
+        }, { once: true });
+      }
+    </script>
+  </body>
+</html>

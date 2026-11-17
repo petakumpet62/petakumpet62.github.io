@@ -1,0 +1,22 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml:1:1-3:12
+INJECTED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml:1:1-3:12
+	package
+		INJECTED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml:1:11-69
+uses-feature#android.hardware.uwb
+ADDED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml:2:3-80
+	android:required
+		ADDED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml:2:53-77
+	android:name
+		ADDED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml:2:17-52
+uses-sdk
+INJECTED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml
+INJECTED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /workspaces/petak628/mobile/modules/petak-uwb/android/src/main/AndroidManifest.xml

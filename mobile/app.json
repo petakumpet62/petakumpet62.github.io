@@ -1,0 +1,72 @@
+{
+  "expo": {
+    "name": "PETAK - Petak Umpet",
+    "slug": "mobile",
+    "description": "Main PETAK, permainan petak umpet dari browser. Buat room, ajak teman, dan mulai bermain bersama.",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0c111b",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ],
+      "package": "com.anonymous.mobile"
+    },
+    "web": {
+      "name": "PETAK - Permainan Petak Umpet",
+      "shortName": "PETAK",
+      "lang": "id",
+      "themeColor": "#0c111b",
+      "backgroundColor": "#0c111b",
+      "display": "standalone",
+      "startUrl": "/",
+      "scope": "/",
+      "favicon": "./public/icons/favicon-32.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Izinkan PETAK mengakses kamera untuk memindai QR room.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Izinkan PETAK menggunakan mikrofon saat bermain dan mengirim pesan siaran.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Izinkan PETAK menggunakan lokasi saat bermain untuk memeriksa batas area."
+        }
+      ]
+    ]
+  }
+}

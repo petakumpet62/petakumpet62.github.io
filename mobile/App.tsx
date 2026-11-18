@@ -220,6 +220,7 @@ const SESSION_STORAGE_KEY = 'petak.active-session';
 const ACCOUNT_STORAGE_KEY = 'petak.account-session';
 const THEME_PREFERENCE_STORAGE_KEY = 'petak.theme-preference';
 const SPEECH_VOICE_STORAGE_KEY = 'petak.speech-voice';
+const COMPANION_VOICE_POSITION_STORAGE_KEY = 'petak.companion-voice-position';
 const BROADCAST_INTRO_STORAGE_KEY = 'petak.broadcast-intro-seen';
 const GETTING_STARTED_STORAGE_KEY = 'petak.getting-started-seen';
 const LOBBY_MUSIC_ASSET = require('./assets/music/lobby-theme.wav');
@@ -606,17 +607,35 @@ function AppContent() {
   const [companionStats, setCompanionStats] = useState<CompanionStats | null>(null);
   const [isLoadingCompanionStats, setIsLoadingCompanionStats] = useState(false);
   const [companionStatsError, setCompanionStatsError] = useState('');
-  const [companionChatMessage, setCompanionChatMessage] = useState('');
   const [companionChatReply, setCompanionChatReply] = useState('');
   const [companionChatError, setCompanionChatError] = useState('');
-  const [isCompanionChatSending, setIsCompanionChatSending] = useState(false);
   const [isCompanionVoiceListening, setIsCompanionVoiceListening] = useState(false);
   const [isCompanionVoiceEnabled, setIsCompanionVoiceEnabled] = useState(false);
   const [isCompanionVoicePanelOpen, setIsCompanionVoicePanelOpen] = useState(false);
-  const [isCompanionVoiceSpeaking, setIsCompanionVoiceSpeaking] = useState(false);
+  const [companionVoiceInterimTranscript, setCompanionVoiceInterimTranscript] = useState('');
   const [companionVoiceDraft, setCompanionVoiceDraft] = useState('');
+  const [companionPanelPosition, setCompanionPanelPosition] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
+  const [isCompanionVoiceSpeaking, setIsCompanionVoiceSpeaking] = useState(false);
   const [companionVoiceQueuedCount, setCompanionVoiceQueuedCount] = useState(0);
   const [companionVoiceActiveMessage, setCompanionVoiceActiveMessage] = useState('');
+  const [isCompanionVoicePositionLoaded, setIsCompanionVoicePositionLoaded] = useState(false);
+  const companionVoicePositionRef = useRef({
+    x: 14,
+    y: Math.max(12, viewportHeight - insets.bottom - 68),
+  });
+  const companionVoicePosition = useRef(
+    new Animated.ValueXY(companionVoicePositionRef.current)
+  ).current;
+  const companionVoiceDragOriginRef = useRef(companionVoicePositionRef.current);
+  const companionVoiceWasDraggedRef = useRef(false);
+  const companionPanelPositionRef = useRef<{ left: number; top: number } | null>(null);
+  const companionPanelDragOriginRef = useRef({ left: 0, top: 0 });
+  const companionVoiceSoundBars = useRef(
+    Array.from({ length: 5 }, () => new Animated.Value(0.2))
+  ).current;
   const companionSpeechRecognitionRef = useRef<CompanionSpeechRecognition | null>(null);
   const companionVoiceEnabledRef = useRef(false);
   const companionVoiceTtsPausedRef = useRef(false);
@@ -630,6 +649,93 @@ function AppContent() {
   const startCompanionVoiceRecognitionRef = useRef<() => void>(() => {});
   const enqueueCompanionVoiceMessageRef = useRef<(message: string) => boolean>(() => false);
   const processCompanionVoiceQueueRef = useRef<() => void>(() => {});
+  const isCompanionVoiceProcessing = Boolean(
+    companionVoiceInterimTranscript || companionVoiceDraft || companionVoiceActiveMessage
+  );
+  useEffect(() => {
+    if (!isCompanionVoiceProcessing) {
+      companionVoiceSoundBars.forEach((bar) => bar.setValue(0.2));
+      return;
+    }
+
+    const animations = companionVoiceSoundBars.map((bar, index) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(index * 90),
+          Animated.timing(bar, {
+            toValue: 1,
+            duration: 220,
+            useNativeDriver: false,
+          }),
+          Animated.timing(bar, {
+            toValue: 0.2,
+            duration: 260,
+            useNativeDriver: false,
+          }),
+        ])
+      )
+    );
+    animations.forEach((animation) => animation.start());
+    return () => animations.forEach((animation) => animation.stop());
+  }, [companionVoiceSoundBars, isCompanionVoiceProcessing]);
+  const clampCompanionVoicePosition = useCallback(
+    (position: { x: number; y: number }) => {
+      const minX = 12 + insets.left;
+      const minY = 12 + insets.top;
+      return {
+        x: Math.min(
+          Math.max(minX, viewportWidth - insets.right - 68),
+          Math.max(minX, position.x)
+        ),
+        y: Math.min(
+          Math.max(minY, viewportHeight - insets.bottom - 68),
+          Math.max(minY, position.y)
+        ),
+      };
+    },
+    [insets.bottom, insets.left, insets.right, insets.top, viewportHeight, viewportWidth]
+  );
+  const saveCompanionVoicePosition = useCallback(() => {
+    if (!account?.id) return;
+    void AsyncStorage.setItem(
+      `${COMPANION_VOICE_POSITION_STORAGE_KEY}:${account.id}`,
+      JSON.stringify(companionVoicePositionRef.current)
+    ).catch((error: unknown) => {
+      console.error('Gagal menyimpan posisi tombol Companion', error);
+    });
+  }, [account?.id]);
+  const companionVoicePanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponderCapture: () => {
+          companionVoiceWasDraggedRef.current = false;
+          return false;
+        },
+        onMoveShouldSetPanResponderCapture: (_event, gestureState) => {
+          const shouldStartDragging = Math.hypot(gestureState.dx, gestureState.dy) > 8;
+          if (shouldStartDragging) companionVoiceWasDraggedRef.current = true;
+          return shouldStartDragging;
+        },
+        onPanResponderGrant: () => {
+          companionVoiceDragOriginRef.current = companionVoicePositionRef.current;
+        },
+        onPanResponderMove: (_event, gestureState) => {
+          const nextPosition = clampCompanionVoicePosition({
+            x: companionVoiceDragOriginRef.current.x + gestureState.dx,
+            y: companionVoiceDragOriginRef.current.y + gestureState.dy,
+          });
+          companionVoicePositionRef.current = nextPosition;
+          companionVoicePosition.setValue(nextPosition);
+        },
+        onPanResponderRelease: saveCompanionVoicePosition,
+        onPanResponderTerminate: saveCompanionVoicePosition,
+      }),
+    [
+      clampCompanionVoicePosition,
+      companionVoicePosition,
+      saveCompanionVoicePosition,
+    ]
+  );
   const [availableSpeechVoices, setAvailableSpeechVoices] = useState<DeviceSpeechVoice[]>([]);
   const [selectedSpeechVoiceId, setSelectedSpeechVoiceId] = useState<string | null>(null);
   const [isSpeechVoiceLoading, setIsSpeechVoiceLoading] = useState(false);
@@ -806,9 +912,61 @@ function AppContent() {
     companionVoiceDraftRef.current = '';
     companionVoiceQueueRef.current = [];
     setCompanionVoiceDraft('');
+    setCompanionVoiceInterimTranscript('');
     setCompanionVoiceQueuedCount(0);
     setCompanionVoiceActiveMessage('');
   }, [account?.token]);
+  useEffect(() => {
+    let isCancelled = false;
+    if (!account?.id) {
+      setIsCompanionVoicePositionLoaded(false);
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    setIsCompanionVoicePositionLoaded(false);
+    const storageKey = `${COMPANION_VOICE_POSITION_STORAGE_KEY}:${account.id}`;
+    void AsyncStorage.getItem(storageKey)
+      .then((savedPosition) => {
+        if (isCancelled || !savedPosition) return;
+        const parsed: unknown = JSON.parse(savedPosition);
+        if (
+          !parsed ||
+          typeof parsed !== 'object' ||
+          !('x' in parsed) ||
+          !('y' in parsed) ||
+          typeof parsed.x !== 'number' ||
+          !Number.isFinite(parsed.x) ||
+          typeof parsed.y !== 'number' ||
+          !Number.isFinite(parsed.y)
+        ) {
+          return;
+        }
+        companionVoicePositionRef.current = { x: parsed.x, y: parsed.y };
+        companionVoicePosition.setValue(companionVoicePositionRef.current);
+      })
+      .catch((error: unknown) => {
+        console.error('Gagal memuat posisi tombol Companion', error);
+      })
+      .finally(() => {
+        if (!isCancelled) setIsCompanionVoicePositionLoaded(true);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [account?.id, companionVoicePosition]);
+  useEffect(() => {
+    if (!isCompanionVoicePositionLoaded) return;
+    const nextPosition = clampCompanionVoicePosition(companionVoicePositionRef.current);
+    companionVoicePositionRef.current = nextPosition;
+    companionVoicePosition.setValue(nextPosition);
+  }, [
+    clampCompanionVoicePosition,
+    companionVoicePosition,
+    isCompanionVoicePositionLoaded,
+  ]);
   useEffect(() => () => {
     companionVoiceEnabledRef.current = false;
     companionSpeechRecognitionRef.current?.stop();
@@ -3073,6 +3231,7 @@ function AppContent() {
     if (!enqueueCompanionVoiceMessageRef.current(message)) return;
     companionVoiceDraftRef.current = '';
     setCompanionVoiceDraft('');
+    setCompanionVoiceInterimTranscript('');
   };
 
   const speakCompanionReply = async (reply: string) => {
@@ -3139,7 +3298,6 @@ function AppContent() {
   const processCompanionVoiceQueue = async () => {
     if (companionVoiceQueueProcessingRef.current || !companionAccountRef.current) return;
     companionVoiceQueueProcessingRef.current = true;
-    setIsCompanionChatSending(true);
     try {
       while (companionVoiceQueueRef.current.length > 0) {
         const queuedMessage = companionVoiceQueueRef.current.shift();
@@ -3176,8 +3334,12 @@ function AppContent() {
             companionId?: string;
           };
           if (companionAccountRef.current?.token !== requestAccount.token) break;
+          if (!response.ok) {
+            throw new Error(
+              `${result.error || 'Jawaban Companion belum dapat dimuat.'} (HTTP ${response.status})`
+            );
+          }
           if (
-            !response.ok ||
             typeof result.reply !== 'string' ||
             !result.reply.trim() ||
             result.companionId !== requestAccount.companionId
@@ -3190,7 +3352,10 @@ function AppContent() {
           await speakCompanionReply(reply);
         } catch (error) {
           if (companionAccountRef.current?.token !== requestAccount.token) break;
-          console.error('Gagal mengirim pesan ke Companion', error);
+          const errorMessage = error instanceof Error
+            ? `${error.name}: ${error.message}`
+            : String(error);
+          console.error(`Gagal mengirim pesan ke Companion: ${errorMessage}`, error);
           setCompanionChatError(
             error instanceof Error && error.name === 'AbortError'
               ? 'Chat melewati batas waktu. Coba lagi.'
@@ -3206,7 +3371,6 @@ function AppContent() {
       flushCompanionVoiceDraft();
       companionVoiceQueueProcessingRef.current = false;
       setCompanionVoiceActiveMessage('');
-      setIsCompanionChatSending(false);
       if (companionVoiceQueueRef.current.length > 0 && companionAccountRef.current) {
         processCompanionVoiceQueueRef.current();
       }
@@ -3214,12 +3378,6 @@ function AppContent() {
   };
   processCompanionVoiceQueueRef.current = () => {
     void processCompanionVoiceQueue();
-  };
-
-  const sendCompanionChatMessage = () => {
-    const message = companionChatMessage.trim();
-    if (!message) return;
-    if (enqueueCompanionVoiceMessageRef.current(message)) setCompanionChatMessage('');
   };
 
   const startCompanionVoiceRecognition = () => {
@@ -3253,12 +3411,14 @@ function AppContent() {
     recognition.interimResults = true;
     recognition.onresult = (event) => {
       const finalTranscripts: string[] = [];
+      const interimTranscripts: string[] = [];
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        if (event.results[index].isFinal) {
-          const transcript = event.results[index][0]?.transcript.trim();
-          if (transcript) finalTranscripts.push(transcript);
-        }
+        const transcript = event.results[index][0]?.transcript.trim();
+        if (!transcript) continue;
+        if (event.results[index].isFinal) finalTranscripts.push(transcript);
+        else interimTranscripts.push(transcript);
       }
+      setCompanionVoiceInterimTranscript(interimTranscripts.join(' '));
       if (finalTranscripts.length === 0) return;
       companionVoiceDraftRef.current = [
         companionVoiceDraftRef.current,
@@ -3275,6 +3435,7 @@ function AppContent() {
       );
     };
     recognition.onerror = (event) => {
+      setCompanionVoiceInterimTranscript('');
       if (event.error === 'no-speech') return;
       const messages: Record<string, string> = {
         'not-allowed': 'Izin mikrofon ditolak. Izinkan mikrofon di browser untuk memakai suara.',
@@ -3297,6 +3458,7 @@ function AppContent() {
     };
     recognition.onend = () => {
       setIsCompanionVoiceListening(false);
+      setCompanionVoiceInterimTranscript('');
       if (companionSpeechRecognitionRef.current === recognition) {
         companionSpeechRecognitionRef.current = null;
       }
@@ -3328,25 +3490,36 @@ function AppContent() {
   };
   startCompanionVoiceRecognitionRef.current = startCompanionVoiceRecognition;
 
-  const toggleCompanionVoice = () => {
-    if (!account || Platform.OS !== 'web') return;
-    const shouldEnable = !companionVoiceEnabledRef.current;
-    companionVoiceEnabledRef.current = shouldEnable;
-    setIsCompanionVoiceEnabled(shouldEnable);
-    setIsCompanionVoicePanelOpen(true);
-    setCompanionChatError('');
-    if (shouldEnable) {
-      companionVoiceRestartDelayRef.current = 350;
-      startCompanionVoiceRecognitionRef.current();
-      return;
-    }
+  const stopCompanionVoice = () => {
+    companionVoiceEnabledRef.current = false;
+    setIsCompanionVoiceEnabled(false);
     flushCompanionVoiceDraft();
+    setCompanionVoiceInterimTranscript('');
     companionSpeechRecognitionRef.current?.stop();
     setIsCompanionVoiceListening(false);
     if (companionVoiceRestartTimerRef.current !== null && typeof window !== 'undefined') {
       window.clearTimeout(companionVoiceRestartTimerRef.current);
       companionVoiceRestartTimerRef.current = null;
     }
+  };
+
+  const toggleCompanionVoice = () => {
+    if (!account || Platform.OS !== 'web') return;
+    setIsCompanionVoicePanelOpen(true);
+    setCompanionChatError('');
+    if (companionVoiceEnabledRef.current) {
+      stopCompanionVoice();
+      return;
+    }
+    companionVoiceEnabledRef.current = true;
+    setIsCompanionVoiceEnabled(true);
+    companionVoiceRestartDelayRef.current = 350;
+    startCompanionVoiceRecognitionRef.current();
+  };
+
+  const closeCompanionVoicePanel = () => {
+    if (companionVoiceEnabledRef.current) stopCompanionVoice();
+    setIsCompanionVoicePanelOpen(false);
   };
 
   const openCharacterSettings = (picker: 'avatar' | 'companion' | null = null) => {
@@ -4406,44 +4579,126 @@ function AppContent() {
   const selectedProfileAvatar = PROFILE_AVATARS.find((avatar) => avatar.id === account?.avatarId)
     ?? PROFILE_AVATARS[0];
   const selectedProfileCompanion = getProfileCompanion(account?.companionId ?? DEFAULT_COMPANION_ID);
+  const companionPanelMaxHeight = Math.min(
+    420,
+    Math.max(1, viewportHeight - insets.top - insets.bottom - 24)
+  );
+  const companionPanelWidth = Math.min(
+    330,
+    Math.max(1, viewportWidth - insets.left - insets.right - 24)
+  );
+  const clampCompanionPanelPosition = useCallback(
+    (position: { left: number; top: number }) => {
+      const minLeft = 12 + insets.left;
+      const minTop = 12 + insets.top;
+      return {
+        left: Math.min(
+          Math.max(minLeft, viewportWidth - insets.right - companionPanelWidth - 12),
+          Math.max(minLeft, position.left)
+        ),
+        top: Math.min(
+          Math.max(minTop, viewportHeight - insets.bottom - companionPanelMaxHeight - 12),
+          Math.max(minTop, position.top)
+        ),
+      };
+    },
+    [
+      companionPanelMaxHeight,
+      companionPanelWidth,
+      insets.bottom,
+      insets.left,
+      insets.right,
+      insets.top,
+      viewportHeight,
+      viewportWidth,
+    ]
+  );
+  const getCompanionPanelPosition = (voicePosition: { x: number; y: number }) => {
+    const { x, y } = voicePosition;
+    const top = y > companionPanelMaxHeight + 24
+      ? y - companionPanelMaxHeight - 10
+      : Math.min(y + 66, viewportHeight - insets.bottom - companionPanelMaxHeight - 12);
+    return clampCompanionPanelPosition({ left: x, top });
+  };
+  const companionPanelPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponderCapture: () => false,
+        onMoveShouldSetPanResponderCapture: (_event, gestureState) =>
+          Math.hypot(gestureState.dx, gestureState.dy) > 8,
+        onPanResponderGrant: () => {
+          if (companionPanelPositionRef.current) {
+            companionPanelDragOriginRef.current = companionPanelPositionRef.current;
+          }
+        },
+        onPanResponderMove: (_event, gestureState) => {
+          const nextPosition = clampCompanionPanelPosition({
+            left: companionPanelDragOriginRef.current.left + gestureState.dx,
+            top: companionPanelDragOriginRef.current.top + gestureState.dy,
+          });
+          companionPanelPositionRef.current = nextPosition;
+          setCompanionPanelPosition(nextPosition);
+        },
+      }),
+    [clampCompanionPanelPosition]
+  );
+  const renderCompanionVoiceSoundBars = () => (
+    <View
+      accessibilityLabel="Transkrip suara sedang diproses"
+      accessibilityLiveRegion="polite"
+      style={styles.companionVoiceSoundBars}
+    >
+      {companionVoiceSoundBars.map((bar, index) => (
+        <Animated.View
+          key={index}
+          style={[
+            styles.companionVoiceSoundBar,
+            {
+              height: bar.interpolate({
+                inputRange: [0, 1],
+                outputRange: [4, 16],
+              }),
+            },
+          ]}
+        />
+      ))}
+    </View>
+  );
 
   const companionVoiceControl = (
-    <Modal
-      visible={Platform.OS === 'web' && Boolean(account)}
-      transparent
-      animationType="none"
-      onRequestClose={() => setIsCompanionVoicePanelOpen(false)}
-    >
+    Platform.OS === 'web' && account ? (
       <View pointerEvents="box-none" style={styles.companionVoiceOverlay}>
-        {isCompanionVoicePanelOpen ? (
-          <View style={styles.companionVoicePanel}>
-            <View style={styles.companionVoicePanelHeader}>
+        {isCompanionVoicePanelOpen && companionPanelPosition ? (
+          <View
+            style={[
+              styles.companionVoicePanel,
+              {
+                left: companionPanelPosition.left,
+                top: companionPanelPosition.top,
+                width: companionPanelWidth,
+                maxHeight: companionPanelMaxHeight,
+              },
+            ]}
+          >
+            <View
+              {...companionPanelPanResponder.panHandlers}
+              style={styles.companionVoicePanelHeader}
+            >
               <View style={styles.companionVoicePanelHeading}>
                 <Text style={styles.companionVoicePanelEyebrow}>AI COMPANION</Text>
                 <Text numberOfLines={1} style={styles.companionVoicePanelTitle}>
                   {selectedProfileCompanion.name}
                 </Text>
-                <Text
-                  accessibilityLiveRegion="polite"
-                  style={[
-                    styles.companionVoicePanelStatus,
-                    isCompanionVoiceEnabled && styles.companionVoicePanelStatusActive,
-                  ]}
-                >
-                  {isCompanionVoiceSpeaking
-                    ? 'Companion sedang berbicara'
-                    : isCompanionVoiceListening
-                      ? 'Mendengarkan'
-                      : isCompanionVoiceEnabled
-                        ? 'Menghubungkan mikrofon...'
-                        : 'Mikrofon mati'}
-                </Text>
               </View>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Tutup panel suara Companion"
+                accessibilityLabel={
+                  isCompanionVoiceEnabled
+                    ? 'Tutup panel dan matikan mikrofon Companion'
+                    : 'Tutup panel suara Companion'
+                }
                 style={styles.companionVoicePanelClose}
-                onPress={() => setIsCompanionVoicePanelOpen(false)}
+                onPress={closeCompanionVoicePanel}
               >
                 <Text style={styles.companionVoicePanelCloseText}>×</Text>
               </Pressable>
@@ -4452,15 +4707,23 @@ function AppContent() {
               style={styles.companionVoicePanelBody}
               contentContainerStyle={styles.companionVoicePanelContent}
             >
-              {companionVoiceDraft ? (
+              {companionVoiceDraft || companionVoiceInterimTranscript ? (
                 <View style={styles.companionVoicePanelMessage}>
-                  <Text style={styles.companionVoicePanelLabel}>Terdengar</Text>
-                  <Text style={styles.companionVoicePanelText}>{companionVoiceDraft}</Text>
+                  <View style={styles.companionVoicePanelMessageHeading}>
+                    <Text style={styles.companionVoicePanelLabel}>Terdengar</Text>
+                    {renderCompanionVoiceSoundBars()}
+                  </View>
+                  <Text style={styles.companionVoicePanelText}>
+                    {[companionVoiceDraft, companionVoiceInterimTranscript].filter(Boolean).join(' ')}
+                  </Text>
                 </View>
               ) : null}
               {companionVoiceActiveMessage ? (
                 <View style={styles.companionVoicePanelMessage}>
-                  <Text style={styles.companionVoicePanelLabel}>Sedang diproses</Text>
+                  <View style={styles.companionVoicePanelMessageHeading}>
+                    <Text style={styles.companionVoicePanelLabel}>Sedang diproses</Text>
+                    {renderCompanionVoiceSoundBars()}
+                  </View>
                   <Text style={styles.companionVoicePanelText}>{companionVoiceActiveMessage}</Text>
                 </View>
               ) : null}
@@ -4484,39 +4747,82 @@ function AppContent() {
                 Ucapan dikirim setelah hening 1,5 detik. Maksimal 5 pesan menunggu; mikrofon dijeda saat Companion berbicara. Audio mungkin diproses layanan browser, sedangkan hanya transkrip yang dikirim ke PETAK.
               </Text>
             </ScrollView>
+            <View style={styles.companionVoicePanelMicControl}>
+              <View style={styles.companionVoicePanelMicCopy}>
+                <Text style={styles.companionVoicePanelMicTitle}>Mikrofon</Text>
+                <Text
+                  accessibilityLiveRegion="polite"
+                  style={[
+                    styles.companionVoicePanelMicStatus,
+                    isCompanionVoiceEnabled && styles.companionVoicePanelMicStatusActive,
+                  ]}
+                >
+                  {isCompanionVoiceSpeaking
+                    ? 'Companion sedang berbicara'
+                    : isCompanionVoiceListening
+                      ? 'Mendengarkan'
+                      : isCompanionVoiceEnabled
+                        ? 'Menyiapkan mikrofon...'
+                        : 'Mati'}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="switch"
+                accessibilityLabel={
+                  isCompanionVoiceEnabled
+                    ? 'Matikan mikrofon Companion'
+                    : 'Aktifkan mikrofon Companion'
+                }
+                accessibilityState={{ checked: isCompanionVoiceEnabled }}
+                style={[
+                  styles.companionVoiceMicSwitch,
+                  isCompanionVoiceEnabled && styles.companionVoiceMicSwitchEnabled,
+                ]}
+                onPress={toggleCompanionVoice}
+              >
+                <View
+                  style={[
+                    styles.companionVoiceMicSwitchKnob,
+                    isCompanionVoiceEnabled && styles.companionVoiceMicSwitchKnobEnabled,
+                  ]}
+                />
+              </Pressable>
+            </View>
           </View>
         ) : null}
-        {!isCompanionVoicePanelOpen ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Buka panel suara Companion"
-            style={styles.companionVoicePanelLauncher}
-            onPress={() => setIsCompanionVoicePanelOpen(true)}
-          >
-            <Text style={styles.companionVoicePanelLauncherText}>CHAT</Text>
-          </Pressable>
-        ) : null}
-        <Pressable
-          accessibilityRole="switch"
-          accessibilityLabel={isCompanionVoiceEnabled ? 'Matikan suara Companion' : 'Aktifkan suara Companion'}
-          accessibilityState={{ checked: isCompanionVoiceEnabled }}
-          style={[
-            styles.companionVoiceToggle,
-            isCompanionVoiceEnabled && styles.companionVoiceToggleEnabled,
-          ]}
-          onPress={toggleCompanionVoice}
-        >
-          <Text
+        {!isCompanionVoicePanelOpen && isCompanionVoicePositionLoaded ? (
+          <Animated.View
+            {...companionVoicePanResponder.panHandlers}
             style={[
-              styles.companionVoiceToggleText,
-              isCompanionVoiceEnabled && styles.companionVoiceToggleTextEnabled,
+              styles.companionVoiceDraggable,
+              companionVoicePosition.getLayout(),
             ]}
           >
-            {isCompanionVoiceEnabled ? 'MIC ON' : 'MIC OFF'}
-          </Text>
-        </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Buka chat AI Companion ${selectedProfileCompanion.name}`}
+              accessibilityHint="Ketuk untuk membuka; seret untuk memindahkan"
+              accessibilityState={{ expanded: false }}
+              style={styles.companionVoicePanelLauncher}
+              onPressIn={() => {
+                companionVoiceWasDraggedRef.current = false;
+              }}
+              onPress={() => {
+                if (companionVoiceWasDraggedRef.current) return;
+                const nextPosition = companionPanelPositionRef.current
+                  ? clampCompanionPanelPosition(companionPanelPositionRef.current)
+                  : getCompanionPanelPosition(companionVoicePositionRef.current);
+                companionPanelPositionRef.current = nextPosition;
+                setCompanionPanelPosition(nextPosition);
+                setIsCompanionVoicePanelOpen(true);
+              }}
+            >
+              <Text style={styles.companionVoiceLauncherIcon}>✦</Text>
+            </Pressable>
+          </Animated.View>
+        ) : null}
       </View>
-    </Modal>
+    ) : null
   );
 
   const profileModal = (
@@ -5128,78 +5434,6 @@ function AppContent() {
                       ))}
                     </View>
                   ) : null}
-                </View>
-              ) : null}
-            </View>
-            <View style={styles.profileCompanionChatCard}>
-              <Text style={styles.profileCompanionChatTitle}>
-                Ngobrol dengan {selectedProfileCompanion.name}
-              </Text>
-              <Text style={styles.profileCompanionChatHint}>
-                Jawaban dibuat oleh model Ollama di server. Chat tidak menyimpan riwayat; setiap pesan dikirim terpisah.
-              </Text>
-              <Text style={styles.profileCompanionChatHint}>
-                Aktifkan switch suara Companion yang mengambang untuk berbicara dari halaman mana pun. Browser mungkin memproses audio; hanya transkrip yang dikirim ke backend/Ollama.
-              </Text>
-              <View style={styles.profileCompanionChatReply}>
-                <Text style={styles.profileCompanionChatReplyLabel}>
-                  Kenalan dulu
-                </Text>
-                <Text style={styles.profileCompanionChatReplyText}>
-                  Halo, aku {selectedProfileCompanion.name}. PETAK UMPET +62 adalah petak umpet multiplayer: Seeker mencari Hider, Hider bertahan sambil menyelesaikan misi, dan Impostor menjalankan misi rahasia. Aku teman ngobrol; aku tidak melihat room atau posisi permainan langsung.
-                </Text>
-              </View>
-              <View style={styles.profileCompanionChatInputRow}>
-                <TextInput
-                  accessibilityLabel="Pesan untuk AI Companion"
-                  style={styles.profileCompanionChatInput}
-                  value={companionChatMessage}
-                  onChangeText={setCompanionChatMessage}
-                  onSubmitEditing={() => void sendCompanionChatMessage()}
-                  placeholder="Tulis pesan..."
-                  placeholderTextColor={isLightTheme ? '#64748b' : '#9aa8bb'}
-                  maxLength={600}
-                  returnKeyType="send"
-                />
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Kirim pesan ke Companion"
-                  accessibilityState={{
-                    disabled: !companionChatMessage.trim(),
-                    busy: isCompanionChatSending && !companionChatMessage.trim(),
-                  }}
-                  disabled={!companionChatMessage.trim()}
-                  style={[
-                    styles.profileCompanionChatSend,
-                    !companionChatMessage.trim() &&
-                      styles.disabledButton,
-                  ]}
-                  onPress={() => void sendCompanionChatMessage()}
-                >
-                  <Text style={styles.profileCompanionChatSendText}>Antrekan</Text>
-                </Pressable>
-              </View>
-              {companionVoiceQueuedCount > 0 ? (
-                <Text accessibilityLiveRegion="polite" style={styles.profileCompanionChatHint}>
-                  {companionVoiceQueuedCount} pesan menunggu di antrean suara.
-                </Text>
-              ) : null}
-              <Text style={styles.profileCompanionChatCounter}>
-                {companionChatMessage.length}/600
-              </Text>
-              {companionChatError ? (
-                <Text accessibilityRole="alert" style={styles.profileCompanionChatError}>
-                  {companionChatError}
-                </Text>
-              ) : null}
-              {companionChatReply ? (
-                <View style={styles.profileCompanionChatReply}>
-                  <Text style={styles.profileCompanionChatReplyLabel}>
-                    {selectedProfileCompanion.name}
-                  </Text>
-                  <Text style={styles.profileCompanionChatReplyText}>
-                    {companionChatReply}
-                  </Text>
                 </View>
               ) : null}
             </View>
@@ -9428,100 +9662,35 @@ function createStyles(isLightTheme: boolean) {
     color: isLightTheme ? '#475569' : '#9aa8bb',
     fontSize: 8,
   },
-  profileCompanionChatCard: {
-    gap: 9,
-    padding: 14,
-    marginBottom: 22,
-    backgroundColor: isLightTheme ? '#ffffff' : '#151d2b',
-    borderWidth: 1,
-    borderColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.18)',
-    borderRadius: 16,
-  },
-  profileCompanionChatTitle: {
-    color: isLightTheme ? '#0f172a' : '#f3f6fb',
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  profileCompanionChatHint: {
-    color: isLightTheme ? '#475569' : '#9aa8bb',
-    fontSize: 10,
-    lineHeight: 15,
-  },
-  profileCompanionChatInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  profileCompanionChatInput: {
-    flex: 1,
-    minHeight: 44,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    color: isLightTheme ? '#0f172a' : '#f3f6fb',
-    backgroundColor: isLightTheme ? '#f8fafc' : '#0c111b',
-    borderWidth: 1,
-    borderColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.22)',
-    borderRadius: 11,
-  },
-  profileCompanionChatSend: {
-    minWidth: 68,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    backgroundColor: isLightTheme ? '#42610f' : '#c3f36b',
-    borderRadius: 11,
-  },
-  profileCompanionChatSendText: {
-    color: isLightTheme ? '#ffffff' : '#15200a',
-    fontSize: 11,
-    fontWeight: '900',
-  },
-  profileCompanionChatCounter: {
-    color: isLightTheme ? '#64748b' : '#718096',
-    fontSize: 8,
-    textAlign: 'right',
-  },
-  profileCompanionChatError: {
-    color: isLightTheme ? '#b45309' : '#ffb454',
-    fontSize: 10,
-    lineHeight: 15,
-  },
-  profileCompanionChatReply: {
-    gap: 5,
-    padding: 11,
-    backgroundColor: isLightTheme ? '#f1f8df' : '#1d2615',
-    borderLeftWidth: 3,
-    borderLeftColor: isLightTheme ? '#547a14' : '#c3f36b',
-    borderRadius: 11,
-  },
-  profileCompanionChatReplyLabel: {
-    color: isLightTheme ? '#42610f' : '#c3f36b',
-    fontSize: 9,
-    fontWeight: '900',
-  },
-  profileCompanionChatReplyText: {
-    color: isLightTheme ? '#0f172a' : '#f3f6fb',
-    fontSize: 11,
-    lineHeight: 17,
-  },
   companionVoiceOverlay: {
     position: 'absolute',
     top: 0,
     bottom: 0,
     left: 0,
+    right: 0,
+    width: '100%',
     alignItems: 'flex-start',
     justifyContent: 'flex-end',
     gap: 10,
     paddingHorizontal: 14,
     paddingBottom: 22,
+    zIndex: 10000,
+    elevation: 10000,
+  },
+  companionVoiceDraggable: {
+    position: 'absolute',
+    zIndex: 10001,
+    elevation: 10001,
   },
   companionVoicePanel: {
+    position: 'absolute',
     width: 330,
     maxWidth: '100%',
     maxHeight: 420,
     overflow: 'hidden',
-    backgroundColor: isLightTheme ? '#ffffff' : '#111a27',
+    backgroundColor: isLightTheme
+      ? 'rgba(255, 255, 255, 0.82)'
+      : 'rgba(17, 26, 39, 0.82)',
     borderWidth: 1,
     borderColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.22)',
     borderRadius: 18,
@@ -9557,14 +9726,6 @@ function createStyles(isLightTheme: boolean) {
     fontSize: 15,
     fontWeight: '900',
   },
-  companionVoicePanelStatus: {
-    color: isLightTheme ? '#64748b' : '#9aa8bb',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  companionVoicePanelStatusActive: {
-    color: isLightTheme ? '#42610f' : '#c3f36b',
-  },
   companionVoicePanelClose: {
     width: 32,
     height: 32,
@@ -9588,13 +9749,33 @@ function createStyles(isLightTheme: boolean) {
   companionVoicePanelMessage: {
     gap: 4,
     padding: 10,
-    backgroundColor: isLightTheme ? '#f1f5f9' : '#1a2635',
+    backgroundColor: isLightTheme
+      ? 'rgba(241, 245, 249, 0.76)'
+      : 'rgba(26, 38, 53, 0.76)',
     borderRadius: 11,
+  },
+  companionVoicePanelMessageHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  companionVoiceSoundBars: {
+    height: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  companionVoiceSoundBar: {
+    width: 3,
+    borderRadius: 2,
+    backgroundColor: isLightTheme ? '#547a14' : '#c3f36b',
   },
   companionVoicePanelReply: {
     gap: 4,
     padding: 10,
-    backgroundColor: isLightTheme ? '#f1f8df' : '#1d2615',
+    backgroundColor: isLightTheme
+      ? 'rgba(241, 248, 223, 0.8)'
+      : 'rgba(29, 38, 21, 0.8)',
     borderLeftWidth: 3,
     borderLeftColor: isLightTheme ? '#547a14' : '#c3f36b',
     borderRadius: 11,
@@ -9624,51 +9805,79 @@ function createStyles(isLightTheme: boolean) {
     fontSize: 9,
     lineHeight: 14,
   },
-  companionVoiceToggle: {
-    minWidth: 76,
-    minHeight: 44,
+  companionVoicePanelMicControl: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    backgroundColor: isLightTheme ? '#ffffff' : '#182331',
-    borderWidth: 1,
-    borderColor: isLightTheme ? '#94a3b8' : '#45566b',
-    borderRadius: 15,
-    shadowColor: '#000000',
-    shadowOpacity: 0.22,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 12,
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderTopWidth: 1,
+    borderTopColor: isLightTheme ? '#e2e8f0' : 'rgba(187, 204, 226, 0.14)',
   },
-  companionVoiceToggleEnabled: {
-    backgroundColor: isLightTheme ? '#c3f36b' : '#c3f36b',
-    borderColor: '#c3f36b',
+  companionVoicePanelMicCopy: {
+    flex: 1,
+    gap: 2,
   },
-  companionVoiceToggleText: {
-    color: isLightTheme ? '#334155' : '#e2e8f0',
-    fontSize: 10,
+  companionVoicePanelMicTitle: {
+    color: isLightTheme ? '#0f172a' : '#f3f6fb',
+    fontSize: 11,
     fontWeight: '900',
-    letterSpacing: 0.4,
   },
-  companionVoiceToggleTextEnabled: {
-    color: '#15200a',
+  companionVoicePanelMicStatus: {
+    color: isLightTheme ? '#64748b' : '#9aa8bb',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  companionVoicePanelMicStatusActive: {
+    color: isLightTheme ? '#42610f' : '#c3f36b',
+  },
+  companionVoiceMicSwitch: {
+    width: 48,
+    height: 28,
+    justifyContent: 'center',
+    padding: 3,
+    backgroundColor: isLightTheme ? '#cbd5e1' : '#45566b',
+    borderRadius: 14,
+  },
+  companionVoiceMicSwitchEnabled: {
+    backgroundColor: isLightTheme ? '#547a14' : '#759f37',
+  },
+  companionVoiceMicSwitchKnob: {
+    width: 22,
+    height: 22,
+    alignSelf: 'flex-start',
+    backgroundColor: '#ffffff',
+    borderRadius: 11,
+    shadowColor: '#000000',
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 2,
+  },
+  companionVoiceMicSwitchKnobEnabled: {
+    alignSelf: 'flex-end',
   },
   companionVoicePanelLauncher: {
-    minWidth: 76,
-    minHeight: 38,
+    width: 56,
+    height: 56,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 12,
-    backgroundColor: isLightTheme ? '#ffffff' : '#182331',
+    backgroundColor: '#c3f36b',
     borderWidth: 1,
-    borderColor: isLightTheme ? '#94a3b8' : '#45566b',
-    borderRadius: 13,
+    borderColor: isLightTheme ? '#a3cf4f' : '#d9f99d',
+    borderRadius: 28,
+    shadowColor: '#000000',
+    shadowOpacity: 0.26,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 14,
   },
-  companionVoicePanelLauncherText: {
-    color: isLightTheme ? '#334155' : '#e2e8f0',
-    fontSize: 9,
+  companionVoiceLauncherIcon: {
+    color: '#263719',
+    fontSize: 25,
+    lineHeight: 30,
     fontWeight: '900',
-    letterSpacing: 0.4,
   },
   profileCompanionError: {
     color: '#ffb454',

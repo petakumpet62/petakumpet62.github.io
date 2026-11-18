@@ -47,6 +47,32 @@ import type { UwbAvailability } from './modules/petak-uwb';
 type Role = 'SEEKER' | 'HIDER' | 'IMPOSTOR';
 type Phase = 'LOBBY' | 'PREPARATION' | 'PLAYING' | 'FINISHED' | 'CANCELLED';
 
+type CompanionSpeechRecognitionResult = ArrayLike<{ transcript: string }> & {
+  isFinal: boolean;
+};
+type CompanionSpeechRecognitionEvent = Event & {
+  results: ArrayLike<CompanionSpeechRecognitionResult>;
+  resultIndex: number;
+};
+type CompanionSpeechRecognitionErrorEvent = Event & {
+  error: string;
+};
+type CompanionSpeechRecognition = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: CompanionSpeechRecognitionEvent) => void) | null;
+  onerror: ((event: CompanionSpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+type CompanionSpeechRecognitionConstructor = new () => CompanionSpeechRecognition;
+type CompanionSpeechRecognitionWindow = Window & {
+  SpeechRecognition?: CompanionSpeechRecognitionConstructor;
+  webkitSpeechRecognition?: CompanionSpeechRecognitionConstructor;
+};
+
 type AppAlert = {
   message: string;
 };
@@ -322,10 +348,14 @@ type AvatarUnlockStatus = {
   requiredMissions: number;
 };
 
+type CompanionId = 'kanca' | 'tara' | 'komo' | 'cendi' | 'bako';
+
 type AccountResponse = {
   id: string;
   username: string;
   avatarId: string;
+  companionId: CompanionId;
+  companionStatsEnabled: boolean;
   badges: number;
   broadcastCredits: number;
   broadcastNextFreeAt: number;
@@ -337,6 +367,24 @@ type AccountResponse = {
   avatarUnlocks?: Record<string, AvatarUnlockStatus>;
   token?: string;
 };
+
+type CompanionStats = {
+  games: number;
+  wins: number;
+  missionsByRole: Record<'hider' | 'seeker' | 'impostor', number>;
+};
+
+function isCompanionStats(value: unknown): value is CompanionStats {
+  if (!value || typeof value !== 'object') return false;
+  const stats = value as Partial<CompanionStats>;
+  return Number.isSafeInteger(stats.games) && (stats.games ?? -1) >= 0 &&
+    Number.isSafeInteger(stats.wins) && (stats.wins ?? -1) >= 0 &&
+    Boolean(stats.missionsByRole) &&
+    (['hider', 'seeker', 'impostor'] as const).every((role) => {
+      const count = stats.missionsByRole?.[role];
+      return Number.isSafeInteger(count) && (count ?? -1) >= 0;
+    });
+}
 
 type AccountSession = AccountResponse & {
   token: string;
@@ -357,6 +405,7 @@ type LeaderboardEntry = {
 };
 
 const DEFAULT_PROFILE_AVATAR_ID = 'petak-logo';
+const DEFAULT_COMPANION_ID: CompanionId = 'kanca';
 const SPECTATOR_TRACK_COLORS = ['#2563eb', '#dc2626', '#7c3aed', '#ea580c', '#0891b2', '#65a30d'];
 const PROFILE_AVATARS: Array<{
   id: string;
@@ -381,6 +430,53 @@ const PROFILE_AVATARS: Array<{
   { id: 'profile-14', name: 'Solstice', label: 'Strategis', image: require('./assets/profile-avatars/profile-14.png') },
   { id: 'profile-15', name: 'Zephyra', label: 'Pengelana', image: require('./assets/profile-avatars/profile-15.png') },
 ];
+
+const PROFILE_COMPANIONS: Array<{
+  id: CompanionId;
+  name: string;
+  image: ImageSourcePropType;
+  animatedImage: ImageSourcePropType;
+}> = [
+  {
+    id: 'kanca',
+    name: 'Kanca',
+    image: require('./assets/companions/v2/kanca.png'),
+    animatedImage: require('./assets/companions/v2/kanca_idle.webp'),
+  },
+  {
+    id: 'tara',
+    name: 'Tara',
+    image: require('./assets/companions/v2/tara.png'),
+    animatedImage: require('./assets/companions/v2/tara_idle.webp'),
+  },
+  {
+    id: 'komo',
+    name: 'Komo',
+    image: require('./assets/companions/v2/komo.png'),
+    animatedImage: require('./assets/companions/v2/komo_idle.webp'),
+  },
+  {
+    id: 'cendi',
+    name: 'Cendi',
+    image: require('./assets/companions/v2/cendi.png'),
+    animatedImage: require('./assets/companions/v2/cendi_idle.webp'),
+  },
+  {
+    id: 'bako',
+    name: 'Bako',
+    image: require('./assets/companions/v2/bako.png'),
+    animatedImage: require('./assets/companions/v2/bako_idle.webp'),
+  },
+];
+
+function isCompanionId(value: unknown): value is CompanionId {
+  return PROFILE_COMPANIONS.some((companion) => companion.id === value);
+}
+
+function getProfileCompanion(companionId: CompanionId) {
+  return PROFILE_COMPANIONS.find((companion) => companion.id === companionId)
+    ?? PROFILE_COMPANIONS[0];
+}
 
 function getProfileAvatarSource(avatarId?: string) {
   return PROFILE_AVATARS.find((avatar) => avatar.id === avatarId)?.image
@@ -490,6 +586,8 @@ function AppContent() {
   const [hasSearchedNearbyRooms, setHasSearchedNearbyRooms] = useState(false);
   const [isSearchingNearbyRooms, setIsSearchingNearbyRooms] = useState(false);
   const [account, setAccount] = useState<AccountSession | null>(null);
+  const companionAccountRef = useRef<AccountSession | null>(null);
+  companionAccountRef.current = account;
   const [isAccountLoading, setIsAccountLoading] = useState(true);
   const isStartupLoading = isAccountLoading || isThemePreferenceLoading;
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
@@ -501,6 +599,37 @@ function AppContent() {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isSavingAvatar, setIsSavingAvatar] = useState(false);
   const [profileAvatarError, setProfileAvatarError] = useState('');
+  const [isSavingCompanion, setIsSavingCompanion] = useState(false);
+  const [profileCompanionError, setProfileCompanionError] = useState('');
+  const [isSavingCompanionPrivacy, setIsSavingCompanionPrivacy] = useState(false);
+  const [companionPrivacyError, setCompanionPrivacyError] = useState('');
+  const [companionStats, setCompanionStats] = useState<CompanionStats | null>(null);
+  const [isLoadingCompanionStats, setIsLoadingCompanionStats] = useState(false);
+  const [companionStatsError, setCompanionStatsError] = useState('');
+  const [companionChatMessage, setCompanionChatMessage] = useState('');
+  const [companionChatReply, setCompanionChatReply] = useState('');
+  const [companionChatError, setCompanionChatError] = useState('');
+  const [isCompanionChatSending, setIsCompanionChatSending] = useState(false);
+  const [isCompanionVoiceListening, setIsCompanionVoiceListening] = useState(false);
+  const [isCompanionVoiceEnabled, setIsCompanionVoiceEnabled] = useState(false);
+  const [isCompanionVoicePanelOpen, setIsCompanionVoicePanelOpen] = useState(false);
+  const [isCompanionVoiceSpeaking, setIsCompanionVoiceSpeaking] = useState(false);
+  const [companionVoiceDraft, setCompanionVoiceDraft] = useState('');
+  const [companionVoiceQueuedCount, setCompanionVoiceQueuedCount] = useState(0);
+  const [companionVoiceActiveMessage, setCompanionVoiceActiveMessage] = useState('');
+  const companionSpeechRecognitionRef = useRef<CompanionSpeechRecognition | null>(null);
+  const companionVoiceEnabledRef = useRef(false);
+  const companionVoiceTtsPausedRef = useRef(false);
+  const companionVoicePageVisibleRef = useRef(true);
+  const companionVoiceDraftRef = useRef('');
+  const companionVoiceQueueRef = useRef<string[]>([]);
+  const companionVoiceQueueProcessingRef = useRef(false);
+  const companionVoiceDebounceTimerRef = useRef<number | null>(null);
+  const companionVoiceRestartTimerRef = useRef<number | null>(null);
+  const companionVoiceRestartDelayRef = useRef(350);
+  const startCompanionVoiceRecognitionRef = useRef<() => void>(() => {});
+  const enqueueCompanionVoiceMessageRef = useRef<(message: string) => boolean>(() => false);
+  const processCompanionVoiceQueueRef = useRef<() => void>(() => {});
   const [availableSpeechVoices, setAvailableSpeechVoices] = useState<DeviceSpeechVoice[]>([]);
   const [selectedSpeechVoiceId, setSelectedSpeechVoiceId] = useState<string | null>(null);
   const [isSpeechVoiceLoading, setIsSpeechVoiceLoading] = useState(false);
@@ -514,6 +643,8 @@ function AppContent() {
   const [leaderboardError, setLeaderboardError] = useState('');
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isCharacterSettingsOpen, setIsCharacterSettingsOpen] = useState(false);
+  const [profileCharacterPicker, setProfileCharacterPicker] = useState<'avatar' | 'companion' | null>(null);
   const [isGameTimelineOpen, setIsGameTimelineOpen] = useState(false);
   const [isLobbyDetailsOpen, setIsLobbyDetailsOpen] = useState(false);
   const [isSelectingRandomRadius, setIsSelectingRandomRadius] = useState(false);
@@ -638,6 +769,61 @@ function AppContent() {
       </View>
     </View>
   );
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    const handleVisibilityChange = () => {
+      const isVisible = document.visibilityState === 'visible';
+      companionVoicePageVisibleRef.current = isVisible;
+      if (!isVisible) {
+        companionSpeechRecognitionRef.current?.stop();
+      } else if (companionVoiceEnabledRef.current && !companionVoiceTtsPausedRef.current) {
+        startCompanionVoiceRecognitionRef.current();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    handleVisibilityChange();
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+  useEffect(() => {
+    if (account) return;
+    companionVoiceEnabledRef.current = false;
+    companionVoiceTtsPausedRef.current = false;
+    setIsCompanionVoiceEnabled(false);
+    setIsCompanionVoicePanelOpen(false);
+    setIsCompanionVoiceSpeaking(false);
+    companionSpeechRecognitionRef.current?.stop();
+    void Speech.stop().catch((error: unknown) => {
+      console.error('Gagal menghentikan suara Companion setelah sesi berakhir', error);
+    });
+    if (companionVoiceDebounceTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(companionVoiceDebounceTimerRef.current);
+      companionVoiceDebounceTimerRef.current = null;
+    }
+    if (companionVoiceRestartTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(companionVoiceRestartTimerRef.current);
+      companionVoiceRestartTimerRef.current = null;
+    }
+    companionVoiceDraftRef.current = '';
+    companionVoiceQueueRef.current = [];
+    setCompanionVoiceDraft('');
+    setCompanionVoiceQueuedCount(0);
+    setCompanionVoiceActiveMessage('');
+  }, [account?.token]);
+  useEffect(() => () => {
+    companionVoiceEnabledRef.current = false;
+    companionSpeechRecognitionRef.current?.stop();
+    if (typeof window !== 'undefined') {
+      if (companionVoiceDebounceTimerRef.current !== null) {
+        window.clearTimeout(companionVoiceDebounceTimerRef.current);
+      }
+      if (companionVoiceRestartTimerRef.current !== null) {
+        window.clearTimeout(companionVoiceRestartTimerRef.current);
+      }
+    }
+    void Speech.stop().catch((error: unknown) => {
+      console.error('Gagal membersihkan suara Companion', error);
+    });
+  }, []);
   useEffect(() => {
     let isCancelled = false;
     void AsyncStorage.getItem(THEME_PREFERENCE_STORAGE_KEY)
@@ -1173,6 +1359,8 @@ function AppContent() {
     if (!account) {
       setIsLeaderboardOpen(false);
       setIsProfileOpen(false);
+      setIsCharacterSettingsOpen(false);
+      setProfileCharacterPicker(null);
       setIsFeatureLauncherOpen(false);
     }
   }, [account]);
@@ -1243,6 +1431,10 @@ function AppContent() {
           avatarId: typeof parsed.avatarId === 'string'
             ? parsed.avatarId
             : DEFAULT_PROFILE_AVATAR_ID,
+          companionId: isCompanionId(parsed.companionId)
+            ? parsed.companionId
+            : DEFAULT_COMPANION_ID,
+          companionStatsEnabled: parsed.companionStatsEnabled === true,
           badges: Number(parsed.badges),
           token: parsed.token,
           broadcastCredits: Number.isFinite(parsed.broadcastCredits) ? Number(parsed.broadcastCredits) : 0,
@@ -1302,6 +1494,52 @@ function AppContent() {
       console.error('Gagal menyimpan sesi akun PETAK', error);
     });
   }, [account]);
+
+  useEffect(() => {
+    if (!account?.companionStatsEnabled || !isProfileOpen) {
+      setCompanionStats(null);
+      setCompanionStatsError('');
+      setIsLoadingCompanionStats(false);
+      return;
+    }
+
+    let isCancelled = false;
+    setIsLoadingCompanionStats(true);
+    setCompanionStatsError('');
+
+    void fetchWithTimeout(`${SOCKET_URL}/api/auth/companion/stats`, {
+      headers: { Authorization: `Bearer ${account.token}` },
+    })
+      .then(async (response) => {
+        const result = await response.json() as CompanionStats & { error?: string };
+        if (!response.ok) {
+          throw new Error(result.error || 'Statistik Companion belum dapat dimuat.');
+        }
+        if (!isCompanionStats(result)) {
+          throw new Error('Data statistik Companion tidak valid.');
+        }
+        if (!isCancelled) setCompanionStats(result);
+      })
+      .catch((error: unknown) => {
+        console.error('Gagal memuat statistik Companion', error);
+        if (!isCancelled) {
+          setCompanionStatsError(
+            error instanceof Error && error.name === 'AbortError'
+              ? 'Server terlalu lama merespons. Coba buka kembali Profil.'
+              : error instanceof Error
+                ? error.message
+                : 'Statistik Companion belum dapat dimuat.'
+          );
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) setIsLoadingCompanionStats(false);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [account?.companionStatsEnabled, account?.token, isProfileOpen]);
 
   useEffect(() => {
     setNearbyRooms([]);
@@ -2700,6 +2938,7 @@ function AppContent() {
       setAccount((current) => current
         ? { ...current, ...result, token: current.token }
         : current);
+      setProfileCharacterPicker(null);
       if (room?.phase === 'LOBBY' && socketRef.current?.connected) {
         socketRef.current.emit('player:avatar:select', { avatarId });
       }
@@ -2717,6 +2956,409 @@ function AppContent() {
     }
   };
 
+  const saveProfileCompanion = async (companionId: CompanionId) => {
+    if (!account || isSavingCompanion || companionId === account.companionId) return;
+    setIsSavingCompanion(true);
+    setProfileCompanionError('');
+
+    try {
+      const response = await fetchWithTimeout(`${SOCKET_URL}/api/auth/companion`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${account.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ companionId }),
+      });
+      const responseType = response.headers.get('content-type') ?? '';
+      if (!/json/i.test(responseType)) {
+        throw new Error(
+          response.status === 404
+            ? 'Endpoint Companion belum ditemukan. Mulai ulang backend PETAK terbaru, lalu coba lagi.'
+            : `Server mengembalikan halaman, bukan data Companion (HTTP ${response.status}). Pastikan backend PETAK terbaru berjalan.`
+        );
+      }
+      const result = await response.json() as AccountResponse & { error?: string };
+      if (!response.ok || result.companionId !== companionId) {
+        throw new Error(result.error || 'Pilihan Companion belum dapat disimpan.');
+      }
+
+      setAccount((current) => current
+        ? { ...current, ...result, token: current.token }
+        : current);
+      setProfileCharacterPicker(null);
+      setCompanionChatReply('');
+      setCompanionChatError('');
+    } catch (error) {
+      console.error('Gagal memperbarui Companion profil PETAK', error);
+      setProfileCompanionError(
+        error instanceof Error && error.name === 'AbortError'
+          ? 'Server terlalu lama merespons. Coba pilih lagi.'
+          : error instanceof Error
+            ? error.message
+            : 'Pilihan Companion belum dapat disimpan. Coba lagi.'
+      );
+    } finally {
+      setIsSavingCompanion(false);
+    }
+  };
+
+  const saveCompanionStatsConsent = async (enabled: boolean) => {
+    if (!account || isSavingCompanionPrivacy || enabled === account.companionStatsEnabled) return;
+    setIsSavingCompanionPrivacy(true);
+    setCompanionPrivacyError('');
+
+    try {
+      const response = await fetchWithTimeout(`${SOCKET_URL}/api/auth/companion/privacy`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${account.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ companionStatsEnabled: enabled }),
+      });
+      const responseType = response.headers.get('content-type') ?? '';
+      if (!/json/i.test(responseType)) {
+        throw new Error(
+          response.status === 404
+            ? 'Pengaturan privasi Companion belum tersedia. Mulai ulang backend PETAK terbaru.'
+            : `Server mengembalikan halaman, bukan data privasi (HTTP ${response.status}).`
+        );
+      }
+
+      const result = await response.json() as AccountResponse & { error?: string };
+      if (!response.ok || result.companionStatsEnabled !== enabled) {
+        throw new Error(result.error || 'Pengaturan privasi Companion belum dapat disimpan.');
+      }
+      setAccount((current) => current
+        ? { ...current, ...result, token: current.token }
+        : current);
+      if (!enabled) setCompanionStats(null);
+    } catch (error) {
+      console.error('Gagal memperbarui izin statistik Companion', error);
+      setCompanionPrivacyError(
+        error instanceof Error && error.name === 'AbortError'
+          ? 'Server terlalu lama merespons. Coba lagi.'
+          : error instanceof Error
+            ? error.message
+            : 'Pengaturan privasi Companion belum dapat disimpan.'
+      );
+    } finally {
+      setIsSavingCompanionPrivacy(false);
+    }
+  };
+
+  const enqueueCompanionVoiceMessage = (message: string) => {
+    const normalizedMessage = message.trim().slice(0, 600);
+    if (!account || !normalizedMessage) return false;
+    if (companionVoiceQueueRef.current.length >= 5) {
+      setCompanionChatError('Antrean Companion penuh. Tunggu jawaban selesai sebelum menambah pesan.');
+      return false;
+    }
+    companionVoiceQueueRef.current.push(normalizedMessage);
+    setCompanionVoiceQueuedCount(companionVoiceQueueRef.current.length);
+    setCompanionChatError('');
+    processCompanionVoiceQueueRef.current();
+    return true;
+  };
+  enqueueCompanionVoiceMessageRef.current = enqueueCompanionVoiceMessage;
+
+  const flushCompanionVoiceDraft = () => {
+    if (companionVoiceDebounceTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(companionVoiceDebounceTimerRef.current);
+      companionVoiceDebounceTimerRef.current = null;
+    }
+    const message = companionVoiceDraftRef.current.trim();
+    if (!message) return;
+    if (!enqueueCompanionVoiceMessageRef.current(message)) return;
+    companionVoiceDraftRef.current = '';
+    setCompanionVoiceDraft('');
+  };
+
+  const speakCompanionReply = async (reply: string) => {
+    const shouldResumeListening = companionVoiceEnabledRef.current;
+    if (shouldResumeListening) {
+      companionVoiceTtsPausedRef.current = true;
+      companionSpeechRecognitionRef.current?.stop();
+    }
+    setIsCompanionVoiceSpeaking(true);
+    try {
+      await Speech.stop();
+      await new Promise<void>((resolve) => {
+        let isFinished = false;
+        let timeout: ReturnType<typeof setTimeout>;
+        const finish = () => {
+          if (isFinished) return;
+          isFinished = true;
+          clearTimeout(timeout);
+          resolve();
+        };
+        timeout = setTimeout(() => {
+          setCompanionChatError('TTS terlalu lama merespons. Antrean pesan dilanjutkan.');
+          void Speech.stop().catch((error: unknown) => {
+            console.error('Gagal menghentikan TTS yang melewati batas waktu', error);
+          });
+          finish();
+        }, 90_000);
+        try {
+          Speech.speak(toIndonesianSpeech(reply), {
+            language: 'id-ID',
+            rate: 0.92,
+            voice: selectedSpeechVoiceId ?? undefined,
+            onDone: finish,
+            onStopped: finish,
+            onError: (error) => {
+              console.error('Gagal membacakan jawaban Companion', error);
+              setCompanionChatError('Jawaban tampil, tetapi TTS gagal diputar.');
+              finish();
+            },
+          });
+        } catch (error) {
+          finish();
+          throw error;
+        }
+      });
+    } catch (error) {
+      console.error('Gagal memulai TTS jawaban Companion', error);
+      setCompanionChatError('Jawaban tampil, tetapi TTS gagal diputar.');
+    } finally {
+      setIsCompanionVoiceSpeaking(false);
+      companionVoiceTtsPausedRef.current = false;
+      if (shouldResumeListening && companionVoiceEnabledRef.current && typeof window !== 'undefined') {
+        if (companionVoiceRestartTimerRef.current !== null) {
+          window.clearTimeout(companionVoiceRestartTimerRef.current);
+        }
+        companionVoiceRestartTimerRef.current = window.setTimeout(() => {
+          companionVoiceRestartTimerRef.current = null;
+          startCompanionVoiceRecognitionRef.current();
+        }, 350);
+      }
+    }
+  };
+
+  const processCompanionVoiceQueue = async () => {
+    if (companionVoiceQueueProcessingRef.current || !companionAccountRef.current) return;
+    companionVoiceQueueProcessingRef.current = true;
+    setIsCompanionChatSending(true);
+    try {
+      while (companionVoiceQueueRef.current.length > 0) {
+        const queuedMessage = companionVoiceQueueRef.current.shift();
+        const requestAccount: AccountSession | null = companionAccountRef.current;
+        setCompanionVoiceQueuedCount(companionVoiceQueueRef.current.length);
+        if (!queuedMessage || !requestAccount) break;
+        setCompanionVoiceActiveMessage(queuedMessage);
+
+        try {
+          const response = await fetchWithTimeout(
+            `${SOCKET_URL}/api/auth/companion/chat`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${requestAccount.token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ message: queuedMessage }),
+            },
+            35_000
+          );
+          const responseType = response.headers.get('content-type') ?? '';
+          if (!/json/i.test(responseType)) {
+            throw new Error(
+              response.status === 404
+                ? 'Chat Companion belum tersedia. Mulai ulang backend PETAK terbaru.'
+                : `Server mengembalikan halaman, bukan jawaban Companion (HTTP ${response.status}).`
+            );
+          }
+
+          const result = await response.json() as {
+            reply?: unknown;
+            error?: string;
+            companionId?: string;
+          };
+          if (companionAccountRef.current?.token !== requestAccount.token) break;
+          if (
+            !response.ok ||
+            typeof result.reply !== 'string' ||
+            !result.reply.trim() ||
+            result.companionId !== requestAccount.companionId
+          ) {
+            throw new Error(result.error || 'Jawaban Companion belum dapat dimuat.');
+          }
+          const reply = result.reply.trim();
+          setCompanionChatReply(reply);
+          setCompanionChatError('');
+          await speakCompanionReply(reply);
+        } catch (error) {
+          if (companionAccountRef.current?.token !== requestAccount.token) break;
+          console.error('Gagal mengirim pesan ke Companion', error);
+          setCompanionChatError(
+            error instanceof Error && error.name === 'AbortError'
+              ? 'Chat melewati batas waktu. Coba lagi.'
+              : error instanceof TypeError
+                ? 'Tidak dapat terhubung ke server PETAK. Periksa koneksi lalu coba lagi.'
+              : error instanceof Error
+                ? error.message
+                : 'Companion belum dapat menjawab. Coba lagi.'
+          );
+        }
+      }
+    } finally {
+      flushCompanionVoiceDraft();
+      companionVoiceQueueProcessingRef.current = false;
+      setCompanionVoiceActiveMessage('');
+      setIsCompanionChatSending(false);
+      if (companionVoiceQueueRef.current.length > 0 && companionAccountRef.current) {
+        processCompanionVoiceQueueRef.current();
+      }
+    }
+  };
+  processCompanionVoiceQueueRef.current = () => {
+    void processCompanionVoiceQueue();
+  };
+
+  const sendCompanionChatMessage = () => {
+    const message = companionChatMessage.trim();
+    if (!message) return;
+    if (enqueueCompanionVoiceMessageRef.current(message)) setCompanionChatMessage('');
+  };
+
+  const startCompanionVoiceRecognition = () => {
+    if (
+      Platform.OS !== 'web' ||
+      typeof window === 'undefined' ||
+      !companionVoiceEnabledRef.current ||
+      companionVoiceTtsPausedRef.current ||
+      !companionVoicePageVisibleRef.current ||
+      companionSpeechRecognitionRef.current
+    ) return;
+    if (!window.isSecureContext) {
+      companionVoiceEnabledRef.current = false;
+      setIsCompanionVoiceEnabled(false);
+      setCompanionChatError('Input suara memerlukan koneksi aman HTTPS atau localhost.');
+      return;
+    }
+    const speechWindow = window as CompanionSpeechRecognitionWindow;
+    const SpeechRecognition =
+      speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      companionVoiceEnabledRef.current = false;
+      setIsCompanionVoiceEnabled(false);
+      setCompanionChatError('Pengenalan suara belum didukung browser ini. Coba Chrome atau Edge.');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'id-ID';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onresult = (event) => {
+      const finalTranscripts: string[] = [];
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        if (event.results[index].isFinal) {
+          const transcript = event.results[index][0]?.transcript.trim();
+          if (transcript) finalTranscripts.push(transcript);
+        }
+      }
+      if (finalTranscripts.length === 0) return;
+      companionVoiceDraftRef.current = [
+        companionVoiceDraftRef.current,
+        finalTranscripts.join(' '),
+      ].filter(Boolean).join(' ').slice(0, 600);
+      companionVoiceRestartDelayRef.current = 350;
+      setCompanionVoiceDraft(companionVoiceDraftRef.current);
+      if (companionVoiceDebounceTimerRef.current !== null) {
+        window.clearTimeout(companionVoiceDebounceTimerRef.current);
+      }
+      companionVoiceDebounceTimerRef.current = window.setTimeout(
+        flushCompanionVoiceDraft,
+        1_500
+      );
+    };
+    recognition.onerror = (event) => {
+      if (event.error === 'no-speech') return;
+      const messages: Record<string, string> = {
+        'not-allowed': 'Izin mikrofon ditolak. Izinkan mikrofon di browser untuk memakai suara.',
+        'service-not-allowed': 'Layanan pengenalan suara browser tidak diizinkan.',
+        'audio-capture': 'Mikrofon tidak ditemukan atau sedang digunakan aplikasi lain.',
+        network: 'Layanan transkripsi browser terganggu. PETAK akan mencoba kembali otomatis.',
+        'language-not-supported': 'Pengenalan bahasa Indonesia tidak didukung browser ini.',
+      };
+      setCompanionChatError(messages[event.error] ?? 'Pengenalan suara gagal. Periksa izin mikrofon.');
+      if (event.error === 'network') {
+        companionVoiceRestartDelayRef.current = 5_000;
+      } else if (event.error === 'audio-capture' || event.error === 'language-not-supported') {
+        companionVoiceRestartDelayRef.current = 350;
+        companionVoiceEnabledRef.current = false;
+        setIsCompanionVoiceEnabled(false);
+      } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        companionVoiceEnabledRef.current = false;
+        setIsCompanionVoiceEnabled(false);
+      }
+    };
+    recognition.onend = () => {
+      setIsCompanionVoiceListening(false);
+      if (companionSpeechRecognitionRef.current === recognition) {
+        companionSpeechRecognitionRef.current = null;
+      }
+      if (
+        companionVoiceEnabledRef.current &&
+        !companionVoiceTtsPausedRef.current &&
+        companionVoicePageVisibleRef.current
+      ) {
+        if (companionVoiceRestartTimerRef.current !== null) {
+          window.clearTimeout(companionVoiceRestartTimerRef.current);
+        }
+        companionVoiceRestartTimerRef.current = window.setTimeout(() => {
+          companionVoiceRestartTimerRef.current = null;
+          startCompanionVoiceRecognitionRef.current();
+        }, companionVoiceRestartDelayRef.current);
+      }
+    };
+
+    try {
+      recognition.start();
+      companionSpeechRecognitionRef.current = recognition;
+      setIsCompanionVoiceListening(true);
+    } catch (error) {
+      console.error('Gagal memulai input suara Companion', error);
+      setCompanionChatError('Mikrofon tidak dapat dimulai. Periksa izin browser lalu coba lagi.');
+      companionVoiceEnabledRef.current = false;
+      setIsCompanionVoiceEnabled(false);
+    }
+  };
+  startCompanionVoiceRecognitionRef.current = startCompanionVoiceRecognition;
+
+  const toggleCompanionVoice = () => {
+    if (!account || Platform.OS !== 'web') return;
+    const shouldEnable = !companionVoiceEnabledRef.current;
+    companionVoiceEnabledRef.current = shouldEnable;
+    setIsCompanionVoiceEnabled(shouldEnable);
+    setIsCompanionVoicePanelOpen(true);
+    setCompanionChatError('');
+    if (shouldEnable) {
+      companionVoiceRestartDelayRef.current = 350;
+      startCompanionVoiceRecognitionRef.current();
+      return;
+    }
+    flushCompanionVoiceDraft();
+    companionSpeechRecognitionRef.current?.stop();
+    setIsCompanionVoiceListening(false);
+    if (companionVoiceRestartTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(companionVoiceRestartTimerRef.current);
+      companionVoiceRestartTimerRef.current = null;
+    }
+  };
+
+  const openCharacterSettings = (picker: 'avatar' | 'companion' | null = null) => {
+    setProfileCharacterPicker(picker);
+    setIsCharacterSettingsOpen(true);
+  };
+
+  const closeCharacterSettings = () => {
+    setProfileCharacterPicker(null);
+    setIsCharacterSettingsOpen(false);
+  };
+
   const logoutAccount = async () => {
     if (!account || room || isLoggingOut) return;
     setIsLoggingOut(true);
@@ -2730,6 +3372,8 @@ function AppContent() {
       setAccount(null);
       setAuthPassword('');
       setAuthError('');
+      setIsCharacterSettingsOpen(false);
+      setProfileCharacterPicker(null);
       setIsProfileOpen(false);
     } catch (error) {
       console.error('Gagal logout akun PETAK', error);
@@ -3701,7 +4345,10 @@ function AppContent() {
           }
           ListEmptyComponent={
             isLeaderboardLoading ? (
-              <ActivityIndicator color="#77e0c7" style={styles.leaderboardLoading} />
+              <ActivityIndicator
+                color={isLightTheme ? '#42610f' : '#c3f36b'}
+                style={styles.leaderboardLoading}
+              />
             ) : leaderboardError ? (
               <Text style={styles.connectionOffline}>{leaderboardError}</Text>
             ) : (
@@ -3756,105 +4403,806 @@ function AppContent() {
     </Modal>
   );
 
+  const selectedProfileAvatar = PROFILE_AVATARS.find((avatar) => avatar.id === account?.avatarId)
+    ?? PROFILE_AVATARS[0];
+  const selectedProfileCompanion = getProfileCompanion(account?.companionId ?? DEFAULT_COMPANION_ID);
+
+  const companionVoiceControl = (
+    <Modal
+      visible={Platform.OS === 'web' && Boolean(account)}
+      transparent
+      animationType="none"
+      onRequestClose={() => setIsCompanionVoicePanelOpen(false)}
+    >
+      <View pointerEvents="box-none" style={styles.companionVoiceOverlay}>
+        {isCompanionVoicePanelOpen ? (
+          <View style={styles.companionVoicePanel}>
+            <View style={styles.companionVoicePanelHeader}>
+              <View style={styles.companionVoicePanelHeading}>
+                <Text style={styles.companionVoicePanelEyebrow}>AI COMPANION</Text>
+                <Text numberOfLines={1} style={styles.companionVoicePanelTitle}>
+                  {selectedProfileCompanion.name}
+                </Text>
+                <Text
+                  accessibilityLiveRegion="polite"
+                  style={[
+                    styles.companionVoicePanelStatus,
+                    isCompanionVoiceEnabled && styles.companionVoicePanelStatusActive,
+                  ]}
+                >
+                  {isCompanionVoiceSpeaking
+                    ? 'Companion sedang berbicara'
+                    : isCompanionVoiceListening
+                      ? 'Mendengarkan'
+                      : isCompanionVoiceEnabled
+                        ? 'Menghubungkan mikrofon...'
+                        : 'Mikrofon mati'}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Tutup panel suara Companion"
+                style={styles.companionVoicePanelClose}
+                onPress={() => setIsCompanionVoicePanelOpen(false)}
+              >
+                <Text style={styles.companionVoicePanelCloseText}>×</Text>
+              </Pressable>
+            </View>
+            <ScrollView
+              style={styles.companionVoicePanelBody}
+              contentContainerStyle={styles.companionVoicePanelContent}
+            >
+              {companionVoiceDraft ? (
+                <View style={styles.companionVoicePanelMessage}>
+                  <Text style={styles.companionVoicePanelLabel}>Terdengar</Text>
+                  <Text style={styles.companionVoicePanelText}>{companionVoiceDraft}</Text>
+                </View>
+              ) : null}
+              {companionVoiceActiveMessage ? (
+                <View style={styles.companionVoicePanelMessage}>
+                  <Text style={styles.companionVoicePanelLabel}>Sedang diproses</Text>
+                  <Text style={styles.companionVoicePanelText}>{companionVoiceActiveMessage}</Text>
+                </View>
+              ) : null}
+              {companionVoiceQueuedCount > 0 ? (
+                <Text style={styles.companionVoicePanelQueue}>
+                  {companionVoiceQueuedCount} pesan menunggu
+                </Text>
+              ) : null}
+              {companionChatReply ? (
+                <View style={styles.companionVoicePanelReply}>
+                  <Text style={styles.companionVoicePanelLabel}>{selectedProfileCompanion.name}</Text>
+                  <Text style={styles.companionVoicePanelText}>{companionChatReply}</Text>
+                </View>
+              ) : null}
+              {companionChatError ? (
+                <Text accessibilityRole="alert" style={styles.companionVoicePanelError}>
+                  {companionChatError}
+                </Text>
+              ) : null}
+              <Text style={styles.companionVoicePanelHint}>
+                Ucapan dikirim setelah hening 1,5 detik. Maksimal 5 pesan menunggu; mikrofon dijeda saat Companion berbicara. Audio mungkin diproses layanan browser, sedangkan hanya transkrip yang dikirim ke PETAK.
+              </Text>
+            </ScrollView>
+          </View>
+        ) : null}
+        {!isCompanionVoicePanelOpen ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Buka panel suara Companion"
+            style={styles.companionVoicePanelLauncher}
+            onPress={() => setIsCompanionVoicePanelOpen(true)}
+          >
+            <Text style={styles.companionVoicePanelLauncherText}>CHAT</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          accessibilityRole="switch"
+          accessibilityLabel={isCompanionVoiceEnabled ? 'Matikan suara Companion' : 'Aktifkan suara Companion'}
+          accessibilityState={{ checked: isCompanionVoiceEnabled }}
+          style={[
+            styles.companionVoiceToggle,
+            isCompanionVoiceEnabled && styles.companionVoiceToggleEnabled,
+          ]}
+          onPress={toggleCompanionVoice}
+        >
+          <Text
+            style={[
+              styles.companionVoiceToggleText,
+              isCompanionVoiceEnabled && styles.companionVoiceToggleTextEnabled,
+            ]}
+          >
+            {isCompanionVoiceEnabled ? 'MIC ON' : 'MIC OFF'}
+          </Text>
+        </Pressable>
+      </View>
+    </Modal>
+  );
+
   const profileModal = (
     <Modal
       visible={isProfileOpen && Boolean(account)}
       animationType="slide"
-      onRequestClose={() => setIsProfileOpen(false)}
+      onRequestClose={() => {
+        if (isCharacterSettingsOpen) {
+          closeCharacterSettings();
+          return;
+        }
+        setIsProfileOpen(false);
+      }}
     >
-      <SafeAreaView style={styles.profileModalContainer}>
-        <View style={styles.leaderboardModalHeader}>
+      <SafeAreaView
+        style={[
+          styles.profileModalContainer,
+          isCharacterSettingsOpen && styles.profileCharacterPaletteContainer,
+        ]}
+      >
+        <View
+          style={[
+            styles.leaderboardModalHeader,
+            isCharacterSettingsOpen && styles.profileCharacterPaletteHeader,
+          ]}
+        >
           <View style={styles.leaderboardModalHeading}>
-            <Text style={styles.leaderboardModalEyebrow}>AKUN PEMAIN</Text>
-            <Text style={styles.leaderboardModalTitle}>Profil</Text>
+            <Text
+              style={[
+                styles.leaderboardModalEyebrow,
+                isCharacterSettingsOpen && styles.profileCharacterPaletteEyebrow,
+              ]}
+            >
+              {isCharacterSettingsOpen ? 'PERSONALISASI' : 'AKUN PEMAIN'}
+            </Text>
+            <Text
+              style={[
+                styles.leaderboardModalTitle,
+                isCharacterSettingsOpen && styles.profileCharacterPaletteTitle,
+              ]}
+            >
+              {isCharacterSettingsOpen ? 'Karakter' : 'Profil'}
+            </Text>
           </View>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Tutup profil"
-            style={styles.leaderboardModalClose}
-            onPress={() => setIsProfileOpen(false)}
+            style={[
+              styles.leaderboardModalClose,
+              isCharacterSettingsOpen && styles.profileCharacterPaletteClose,
+            ]}
+            onPress={() => {
+              closeCharacterSettings();
+              setIsProfileOpen(false);
+            }}
           >
-            <Text style={styles.leaderboardModalCloseText}>×</Text>
+            <Text
+              style={[
+                styles.leaderboardModalCloseText,
+                isCharacterSettingsOpen && styles.profileCharacterPaletteCloseText,
+              ]}
+            >
+              ×
+            </Text>
           </Pressable>
         </View>
         {account ? (
-          <ScrollView contentContainerStyle={styles.profileContent}>
-            <View style={styles.profileIdentityCard}>
-              <Image
-                accessibilityLabel={`Avatar profil ${account.username}`}
-                source={getProfileAvatarSource(account.avatarId)}
-                resizeMode={account.avatarId === DEFAULT_PROFILE_AVATAR_ID ? 'contain' : 'cover'}
-                style={styles.profileAvatar}
-              />
-              <View style={styles.profileIdentityDetails}>
-                <Text numberOfLines={1} style={styles.profileUsername}>@{account.username}</Text>
-                <Text style={styles.profileCaption}>AKUN PETAK</Text>
-              </View>
-            </View>
-
-            <View style={styles.profileSectionHeader}>
-              <Text style={styles.profileSectionTitle}>Karakter akun</Text>
-              <Text style={styles.profileSectionMeta}>SEMUA IDENTITAS</Text>
-            </View>
-            <View style={styles.profileAvatarChoiceGrid}>
-              {PROFILE_AVATARS.map((avatar) => {
-                const isSelected = account.avatarId === avatar.id;
-                const unlock = account.avatarUnlocks?.[avatar.id];
-                const isLocked = Boolean(unlock && !unlock.unlocked);
-                const requiredRole = unlock?.role
-                  ? { HIDER: 'Hider', SEEKER: 'Seeker', IMPOSTOR: 'Impostor' }[unlock.role]
-                  : '';
-                return (
+          <ScrollView
+            contentContainerStyle={[
+              styles.profileContent,
+              isCharacterSettingsOpen && styles.profileCharacterPaletteContent,
+            ]}
+          >
+            {!isCharacterSettingsOpen ? (
+              <>
+                <View style={styles.profileIdentityShowcase}>
+                  <View style={styles.profileIdentityCard}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Pilih avatar profil, saat ini ${selectedProfileAvatar.name}`}
+                      style={styles.profileAvatarTapTarget}
+                      onPress={() => openCharacterSettings('avatar')}
+                    >
+                      <Image
+                        accessible={false}
+                        accessibilityLabel={`Avatar profil ${account.username}`}
+                        source={selectedProfileAvatar.image}
+                        resizeMode={account.avatarId === DEFAULT_PROFILE_AVATAR_ID ? 'contain' : 'cover'}
+                        style={styles.profileAvatar}
+                      />
+                      <View pointerEvents="none" style={styles.profileAvatarEditBadge}>
+                        <Text style={styles.profileAvatarEditBadgeText}>✎</Text>
+                      </View>
+                    </Pressable>
+                    <View style={styles.profileIdentityDetails}>
+                      <Text numberOfLines={1} style={styles.profileUsername}>@{account.username}</Text>
+                      <Text style={styles.profileCaption}>AKUN PETAK</Text>
+                    </View>
+                  </View>
                   <Pressable
-                    key={avatar.id}
                     accessibilityRole="button"
-                    accessibilityLabel={
-                      isLocked && unlock
-                        ? `${avatar.name}, terkunci. ${requiredRole}: ${unlock.currentWins} dari ${unlock.requiredWins} kemenangan dan ${unlock.currentMissions} dari ${unlock.requiredMissions} misi.`
-                        : `Pilih karakter ${avatar.name}, ${avatar.label}`
-                    }
-                    accessibilityState={{ selected: isSelected, disabled: isSavingAvatar || isLocked }}
-                    disabled={isSavingAvatar || isLocked}
-                    style={[
-                      styles.profileAvatarChoice,
-                      isSelected && styles.profileAvatarChoiceSelected,
-                      isLocked && styles.profileAvatarChoiceLocked,
-                      isSavingAvatar && styles.disabledButton,
-                    ]}
-                    onPress={() => void saveProfileAvatar(avatar.id)}
+                    accessibilityLabel={`Pilih AI Companion, saat ini ${selectedProfileCompanion.name}`}
+                    style={styles.profileIdentityCompanionOverlay}
+                    onPress={() => openCharacterSettings('companion')}
                   >
                     <Image
-                      source={avatar.image}
-                      resizeMode={avatar.id === DEFAULT_PROFILE_AVATAR_ID ? 'contain' : 'cover'}
-                      style={styles.profileAvatarChoiceImage}
+                      accessibilityLabel={`AI Companion ${selectedProfileCompanion.name}`}
+                      source={
+                        Platform.OS === 'web'
+                          ? selectedProfileCompanion.animatedImage
+                          : selectedProfileCompanion.image
+                      }
+                      resizeMode="contain"
+                      style={styles.profileIdentityCompanion}
                     />
-                    <Text numberOfLines={1} style={styles.profileAvatarChoiceLabel}>
-                      {avatar.name}
+                    <View style={styles.profileIdentityCompanionTag}>
+                      <Text style={styles.profileIdentityCompanionTagText}>AI</Text>
+                    </View>
+                    <View pointerEvents="none" style={styles.profileIdentityCompanionEditBadge}>
+                      <Text style={styles.profileAvatarEditBadgeText}>✎</Text>
+                    </View>
+                  </Pressable>
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Atur AI Companion dan karakter akun"
+                  style={styles.profileCharacterSettingsButton}
+                  onPress={() => openCharacterSettings()}
+                >
+                  <View style={styles.profileCharacterSettingsCopy}>
+                    <Text style={styles.profileCharacterSettingsTitle}>Karakter & Companion</Text>
+                    <Text style={styles.profileCharacterSettingsHint}>
+                      {getProfileCompanion(account.companionId).name} · atur tampilan karakter
                     </Text>
-                    {isLocked && unlock ? (
-                      <Text style={styles.profileAvatarChoiceProgress}>
-                        {requiredRole}: {unlock.currentWins}/{unlock.requiredWins} menang · {unlock.currentMissions}/{unlock.requiredMissions} misi
+                  </View>
+                  <Text style={styles.profileCharacterSettingsArrow}>›</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Kembali ke profil"
+                  style={[
+                    styles.profileCharacterBackButton,
+                    styles.profileCharacterPaletteBackButton,
+                  ]}
+                  onPress={closeCharacterSettings}
+                >
+                  <Text
+                    style={[
+                      styles.profileCharacterBackText,
+                      styles.profileCharacterPaletteAccentText,
+                    ]}
+                  >
+                    ‹  Kembali ke profil
+                  </Text>
+                </Pressable>
+
+                <View style={styles.profileCharacterSelectionCards}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Avatar akun ${selectedProfileAvatar.name}. ${profileCharacterPicker === 'avatar' ? 'Tutup' : 'Tampilkan'} pilihan avatar.`}
+                    accessibilityState={{ expanded: profileCharacterPicker === 'avatar' }}
+                    style={[
+                      styles.profileCharacterSelectionCard,
+                      styles.profileCharacterPaletteCard,
+                      profileCharacterPicker === 'avatar' && styles.profileCharacterSelectionCardOpen,
+                      profileCharacterPicker === 'avatar' && styles.profileCharacterPaletteCardOpen,
+                    ]}
+                    onPress={() => setProfileCharacterPicker((current) => current === 'avatar' ? null : 'avatar')}
+                  >
+                    <Image
+                      source={selectedProfileAvatar.image}
+                      resizeMode={selectedProfileAvatar.id === DEFAULT_PROFILE_AVATAR_ID ? 'contain' : 'cover'}
+                      style={styles.profileCharacterSelectionAvatar}
+                    />
+                    <View style={styles.profileCharacterSelectionCopy}>
+                      <Text
+                        style={[
+                          styles.profileCharacterSelectionEyebrow,
+                          styles.profileCharacterPaletteEyebrow,
+                        ]}
+                      >
+                        AVATAR AKUN
+                      </Text>
+                      <Text
+                        numberOfLines={1}
+                        style={[
+                          styles.profileCharacterSelectionName,
+                          styles.profileCharacterPaletteText,
+                        ]}
+                      >
+                        {selectedProfileAvatar.name}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.profileCharacterSelectionAction,
+                          styles.profileCharacterPaletteMuted,
+                        ]}
+                      >
+                        {profileCharacterPicker === 'avatar' ? 'Tutup pilihan' : 'Lihat pilihan'}
+                      </Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.profileCharacterSelectionArrow,
+                        styles.profileCharacterPaletteAccentText,
+                      ]}
+                    >
+                      ›
+                    </Text>
+                  </Pressable>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`AI Companion ${selectedProfileCompanion.name}. ${profileCharacterPicker === 'companion' ? 'Tutup' : 'Tampilkan'} pilihan Companion.`}
+                    accessibilityState={{ expanded: profileCharacterPicker === 'companion' }}
+                    style={[
+                      styles.profileCharacterSelectionCard,
+                      styles.profileCharacterPaletteCard,
+                      profileCharacterPicker === 'companion' && styles.profileCharacterSelectionCardOpen,
+                      profileCharacterPicker === 'companion' && styles.profileCharacterPaletteCardOpen,
+                    ]}
+                    onPress={() => setProfileCharacterPicker((current) => current === 'companion' ? null : 'companion')}
+                  >
+                    <Image
+                      source={
+                        Platform.OS === 'web'
+                          ? selectedProfileCompanion.animatedImage
+                          : selectedProfileCompanion.image
+                      }
+                      resizeMode="contain"
+                      style={styles.profileCharacterSelectionCompanion}
+                    />
+                    <View style={styles.profileCharacterSelectionCopy}>
+                      <Text
+                        style={[
+                          styles.profileCharacterSelectionEyebrow,
+                          styles.profileCharacterPaletteEyebrow,
+                        ]}
+                      >
+                        AI COMPANION
+                      </Text>
+                      <Text
+                        numberOfLines={1}
+                        style={[
+                          styles.profileCharacterSelectionName,
+                          styles.profileCharacterPaletteText,
+                        ]}
+                      >
+                        {selectedProfileCompanion.name}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.profileCharacterSelectionAction,
+                          styles.profileCharacterPaletteMuted,
+                        ]}
+                      >
+                        {profileCharacterPicker === 'companion' ? 'Tutup pilihan' : 'Lihat pilihan'}
+                      </Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.profileCharacterSelectionArrow,
+                        styles.profileCharacterPaletteAccentText,
+                      ]}
+                    >
+                      ›
+                    </Text>
+                  </Pressable>
+                </View>
+
+                {profileCharacterPicker === null ? (
+                  <Text
+                    style={[
+                      styles.profileCharacterChooserHint,
+                      styles.profileCharacterPaletteMuted,
+                    ]}
+                  >
+                    Ketuk avatar atau Companion untuk membuka pilihan.
+                  </Text>
+                ) : null}
+
+                {profileCharacterPicker === 'companion' ? (
+                  <>
+                    <View style={styles.profileSectionHeader}>
+                      <Text
+                        style={[
+                          styles.profileSectionTitle,
+                          styles.profileCharacterPaletteText,
+                        ]}
+                      >
+                        AI Companion
+                      </Text>
+                      <Text
+                        style={[
+                          styles.profileSectionMeta,
+                          styles.profileCharacterPaletteMuted,
+                        ]}
+                      >
+                        PILIHAN PEMAIN
+                      </Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.profileCompanionHint,
+                        styles.profileCharacterPaletteMuted,
+                      ]}
+                    >
+                      Pilih teman petualanganmu. Untuk saat ini, Companion hanya menjadi identitas visual; fitur AI belum aktif.
+                    </Text>
+                    <View style={styles.profileCompanionGrid}>
+                      {PROFILE_COMPANIONS.map((companion) => {
+                        const isSelected = account.companionId === companion.id;
+                        return (
+                          <Pressable
+                            key={companion.id}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Pilih AI Companion ${companion.name}`}
+                            accessibilityState={{ selected: isSelected, disabled: isSavingCompanion }}
+                            disabled={isSavingCompanion}
+                            style={[
+                              styles.profileCompanionChoice,
+                              styles.profileCharacterPaletteChoice,
+                              isSelected && styles.profileCompanionChoiceSelected,
+                              isSelected && styles.profileCharacterPaletteChoiceSelected,
+                              isSavingCompanion && styles.disabledButton,
+                            ]}
+                            onPress={() => {
+                              if (isSelected) {
+                                setProfileCharacterPicker(null);
+                                return;
+                              }
+                              void saveProfileCompanion(companion.id);
+                            }}
+                          >
+                            <Image
+                              accessibilityLabel={`Karakter Companion ${companion.name}`}
+                              source={companion.image}
+                              resizeMode="contain"
+                              style={styles.profileCompanionImage}
+                            />
+                            <Text
+                              style={[
+                                styles.profileCompanionName,
+                                styles.profileCharacterPaletteText,
+                              ]}
+                            >
+                              {companion.name}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                      <View
+                        accessible
+                        accessibilityRole="text"
+                        accessibilityLabel="BUDI, bot sistem PETAK. Tidak dapat dipilih sebagai Companion."
+                        style={[
+                          styles.profileCompanionChoice,
+                          styles.profileCharacterPaletteChoice,
+                          styles.profileSystemCompanionChoice,
+                        ]}
+                      >
+                        <Image
+                          accessible={false}
+                          source={require('./assets/companions/v2/budi.webp')}
+                          resizeMode="contain"
+                          style={styles.profileCompanionImage}
+                        />
+                        <Text
+                          style={[
+                            styles.profileCompanionName,
+                            styles.profileCharacterPaletteText,
+                          ]}
+                        >
+                          BUDI
+                        </Text>
+                        <Text style={styles.profileSystemCompanionBadge}>BOT SISTEM</Text>
+                      </View>
+                    </View>
+                    <View style={styles.profileSystemCompanionNotice}>
+                      <Text style={styles.profileSystemCompanionNoticeTitle}>PERHATIAN · BUDI BUKAN PILIHAN</Text>
+                      <Text style={styles.profileSystemCompanionNoticeText}>
+                        BUDI adalah bot sistem yang menggantikan pemain setelah batas reconnect terlewati. BUDI tidak bisa dipilih sebagai Companion akun.
+                      </Text>
+                    </View>
+                    {isSavingCompanion ? (
+                      <View style={styles.profileAvatarStatus}>
+                        <ActivityIndicator color="#c3f36b" size="small" />
+                        <Text
+                          style={[
+                            styles.profileAvatarStatusText,
+                            styles.profileCharacterPaletteAccentText,
+                          ]}
+                        >
+                          Menyimpan Companion...
+                        </Text>
+                      </View>
+                    ) : profileCompanionError ? (
+                      <Text accessibilityRole="alert" style={styles.profileCompanionError}>
+                        {profileCompanionError}
                       </Text>
                     ) : null}
-                  </Pressable>
-                );
-              })}
-            </View>
-            {isSavingAvatar ? (
-              <View style={styles.profileAvatarStatus}>
-                <ActivityIndicator color="#77e0c7" size="small" />
-                <Text style={styles.profileAvatarStatusText}>Menyimpan karakter...</Text>
-              </View>
-            ) : profileAvatarError ? (
-              <Text accessibilityRole="alert" style={styles.profileAvatarError}>
-                {profileAvatarError}
-              </Text>
-            ) : (
-              <Text style={styles.profileAvatarHint}>
-                Kemenangan dihitung total per akun; misi dihitung khusus role karakter dan dapat dikumpulkan lintas ronde. Badge tidak dikonsumsi. Karakter terpilih digunakan di profil, lobby, leaderboard, dan hasil pertandingan.
-              </Text>
+                  </>
+                ) : null}
+
+                {profileCharacterPicker === 'avatar' ? (
+                  <>
+                    <View style={styles.profileSectionHeader}>
+                      <Text
+                        style={[
+                          styles.profileSectionTitle,
+                          styles.profileCharacterPaletteText,
+                        ]}
+                      >
+                        Karakter akun
+                      </Text>
+                      <Text
+                        style={[
+                          styles.profileSectionMeta,
+                          styles.profileCharacterPaletteMuted,
+                        ]}
+                      >
+                        SEMUA IDENTITAS
+                      </Text>
+                    </View>
+                    <View style={styles.profileAvatarChoiceGrid}>
+                      {PROFILE_AVATARS.map((avatar) => {
+                        const isSelected = account.avatarId === avatar.id;
+                        const unlock = account.avatarUnlocks?.[avatar.id];
+                        const isLocked = Boolean(unlock && !unlock.unlocked);
+                        const requiredRole = unlock?.role
+                          ? { HIDER: 'Hider', SEEKER: 'Seeker', IMPOSTOR: 'Impostor' }[unlock.role]
+                          : '';
+                        return (
+                          <Pressable
+                            key={avatar.id}
+                            accessibilityRole="button"
+                            accessibilityLabel={
+                              isLocked && unlock
+                                ? `${avatar.name}, terkunci. ${requiredRole}: ${unlock.currentWins} dari ${unlock.requiredWins} kemenangan dan ${unlock.currentMissions} dari ${unlock.requiredMissions} misi.`
+                                : `Pilih karakter ${avatar.name}, ${avatar.label}`
+                            }
+                            accessibilityState={{ selected: isSelected, disabled: isSavingAvatar || isLocked }}
+                            disabled={isSavingAvatar || isLocked}
+                            style={[
+                              styles.profileAvatarChoice,
+                              styles.profileCharacterPaletteChoice,
+                              isSelected && styles.profileAvatarChoiceSelected,
+                              isSelected && styles.profileCharacterPaletteChoiceSelected,
+                              isLocked && styles.profileAvatarChoiceLocked,
+                              isSavingAvatar && styles.disabledButton,
+                            ]}
+                            onPress={() => {
+                              if (isSelected) {
+                                setProfileCharacterPicker(null);
+                                return;
+                              }
+                              void saveProfileAvatar(avatar.id);
+                            }}
+                          >
+                            <Image
+                              source={avatar.image}
+                              resizeMode={avatar.id === DEFAULT_PROFILE_AVATAR_ID ? 'contain' : 'cover'}
+                              style={[
+                                styles.profileAvatarChoiceImage,
+                                styles.profileCharacterPaletteChoiceImage,
+                              ]}
+                            />
+                            <Text
+                              numberOfLines={1}
+                              style={[
+                                styles.profileAvatarChoiceLabel,
+                                styles.profileCharacterPaletteText,
+                              ]}
+                            >
+                              {avatar.name}
+                            </Text>
+                            {isLocked && unlock ? (
+                              <Text
+                                style={[
+                                  styles.profileAvatarChoiceProgress,
+                                  styles.profileCharacterPaletteMuted,
+                                ]}
+                              >
+                                {requiredRole}: {unlock.currentWins}/{unlock.requiredWins} menang · {unlock.currentMissions}/{unlock.requiredMissions} misi
+                              </Text>
+                            ) : null}
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                    {isSavingAvatar ? (
+                      <View style={styles.profileAvatarStatus}>
+                        <ActivityIndicator color="#c3f36b" size="small" />
+                        <Text
+                          style={[
+                            styles.profileAvatarStatusText,
+                            styles.profileCharacterPaletteAccentText,
+                          ]}
+                        >
+                          Menyimpan karakter...
+                        </Text>
+                      </View>
+                    ) : profileAvatarError ? (
+                      <Text accessibilityRole="alert" style={styles.profileAvatarError}>
+                        {profileAvatarError}
+                      </Text>
+                    ) : (
+                      <Text
+                        style={[
+                          styles.profileAvatarHint,
+                          styles.profileCharacterPaletteMuted,
+                        ]}
+                      >
+                        Kemenangan dihitung total per akun; misi dihitung khusus role karakter dan dapat dikumpulkan lintas ronde. Badge tidak dikonsumsi. Karakter terpilih digunakan di profil, lobby, leaderboard, dan hasil pertandingan.
+                      </Text>
+                    )}
+                  </>
+                ) : null}
+              </>
             )}
 
+            {!isCharacterSettingsOpen ? (
+              <>
+            <View style={styles.profileSectionHeader}>
+              <Text style={styles.profileSectionTitle}>AI Companion</Text>
+              <Text style={styles.profileSectionMeta}>PRIVASI DATA</Text>
+            </View>
+            <View style={styles.profileCompanionPrivacyCard}>
+              <Pressable
+                accessibilityRole="switch"
+                accessibilityLabel="Izinkan Companion menggunakan statistik permainan"
+                accessibilityState={{
+                  checked: account.companionStatsEnabled,
+                  disabled: isSavingCompanionPrivacy,
+                }}
+                disabled={isSavingCompanionPrivacy}
+                style={styles.profileCompanionPrivacyToggle}
+                onPress={() => void saveCompanionStatsConsent(!account.companionStatsEnabled)}
+              >
+                <View style={styles.profileCompanionPrivacyCopy}>
+                  <Text style={styles.profileCompanionPrivacyTitle}>Statistik permainan</Text>
+                  <Text style={styles.profileCompanionPrivacyHint}>
+                    Izinkan {selectedProfileCompanion.name} mengakses ringkasan statistik akun ini.
+                  </Text>
+                </View>
+                {isSavingCompanionPrivacy ? (
+                  <ActivityIndicator
+                    color={isLightTheme ? '#42610f' : '#c3f36b'}
+                    size="small"
+                  />
+                ) : (
+                  <Text
+                    style={[
+                      styles.profileCompanionPrivacyState,
+                      account.companionStatsEnabled && styles.profileCompanionPrivacyStateEnabled,
+                    ]}
+                  >
+                    {account.companionStatsEnabled ? 'AKTIF' : 'MATI'}
+                  </Text>
+                )}
+              </Pressable>
+              <Text style={styles.profileCompanionPrivacyDisclosure}>
+                Jika diizinkan, yang disertakan hanya jumlah permainan, kemenangan, dan misi selesai per role. Lokasi GPS, jejak pergerakan, dan informasi pemain lain tidak disertakan. Izin dapat dicabut kapan saja. Pesan chat dan statistik yang diizinkan diproses backend melalui server Ollama yang dikonfigurasi untuk layanan ini.
+              </Text>
+              {companionPrivacyError ? (
+                <Text accessibilityRole="alert" style={styles.profileCompanionPrivacyError}>
+                  {companionPrivacyError}
+                </Text>
+              ) : null}
+              {account.companionStatsEnabled ? (
+                <View style={styles.profileCompanionStats}>
+                  <Text style={styles.profileCompanionStatsTitle}>Ringkasan yang diizinkan</Text>
+                  {isLoadingCompanionStats ? (
+                    <ActivityIndicator
+                      color={isLightTheme ? '#42610f' : '#c3f36b'}
+                      size="small"
+                    />
+                  ) : companionStatsError ? (
+                    <Text accessibilityRole="alert" style={styles.profileCompanionPrivacyError}>
+                      {companionStatsError}
+                    </Text>
+                  ) : companionStats ? (
+                    <View style={styles.profileCompanionStatsGrid}>
+                      <View style={styles.profileCompanionStatsItem}>
+                        <Text style={styles.profileCompanionStatsValue}>{companionStats.games}</Text>
+                        <Text style={styles.profileCompanionStatsLabel}>Permainan</Text>
+                      </View>
+                      <View style={styles.profileCompanionStatsItem}>
+                        <Text style={styles.profileCompanionStatsValue}>{companionStats.wins}</Text>
+                        <Text style={styles.profileCompanionStatsLabel}>Menang</Text>
+                      </View>
+                      {([
+                        ['hider', 'Hider'],
+                        ['seeker', 'Seeker'],
+                        ['impostor', 'Impostor'],
+                      ] as const).map(([role, label]) => (
+                        <View key={role} style={styles.profileCompanionStatsItem}>
+                          <Text style={styles.profileCompanionStatsValue}>
+                            {companionStats.missionsByRole[role]}
+                          </Text>
+                          <Text style={styles.profileCompanionStatsLabel}>
+                            Misi {label}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+            </View>
+            <View style={styles.profileCompanionChatCard}>
+              <Text style={styles.profileCompanionChatTitle}>
+                Ngobrol dengan {selectedProfileCompanion.name}
+              </Text>
+              <Text style={styles.profileCompanionChatHint}>
+                Jawaban dibuat oleh model Ollama di server. Chat tidak menyimpan riwayat; setiap pesan dikirim terpisah.
+              </Text>
+              <Text style={styles.profileCompanionChatHint}>
+                Aktifkan switch suara Companion yang mengambang untuk berbicara dari halaman mana pun. Browser mungkin memproses audio; hanya transkrip yang dikirim ke backend/Ollama.
+              </Text>
+              <View style={styles.profileCompanionChatReply}>
+                <Text style={styles.profileCompanionChatReplyLabel}>
+                  Kenalan dulu
+                </Text>
+                <Text style={styles.profileCompanionChatReplyText}>
+                  Halo, aku {selectedProfileCompanion.name}. PETAK UMPET +62 adalah petak umpet multiplayer: Seeker mencari Hider, Hider bertahan sambil menyelesaikan misi, dan Impostor menjalankan misi rahasia. Aku teman ngobrol; aku tidak melihat room atau posisi permainan langsung.
+                </Text>
+              </View>
+              <View style={styles.profileCompanionChatInputRow}>
+                <TextInput
+                  accessibilityLabel="Pesan untuk AI Companion"
+                  style={styles.profileCompanionChatInput}
+                  value={companionChatMessage}
+                  onChangeText={setCompanionChatMessage}
+                  onSubmitEditing={() => void sendCompanionChatMessage()}
+                  placeholder="Tulis pesan..."
+                  placeholderTextColor={isLightTheme ? '#64748b' : '#9aa8bb'}
+                  maxLength={600}
+                  returnKeyType="send"
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Kirim pesan ke Companion"
+                  accessibilityState={{
+                    disabled: !companionChatMessage.trim(),
+                    busy: isCompanionChatSending && !companionChatMessage.trim(),
+                  }}
+                  disabled={!companionChatMessage.trim()}
+                  style={[
+                    styles.profileCompanionChatSend,
+                    !companionChatMessage.trim() &&
+                      styles.disabledButton,
+                  ]}
+                  onPress={() => void sendCompanionChatMessage()}
+                >
+                  <Text style={styles.profileCompanionChatSendText}>Antrekan</Text>
+                </Pressable>
+              </View>
+              {companionVoiceQueuedCount > 0 ? (
+                <Text accessibilityLiveRegion="polite" style={styles.profileCompanionChatHint}>
+                  {companionVoiceQueuedCount} pesan menunggu di antrean suara.
+                </Text>
+              ) : null}
+              <Text style={styles.profileCompanionChatCounter}>
+                {companionChatMessage.length}/600
+              </Text>
+              {companionChatError ? (
+                <Text accessibilityRole="alert" style={styles.profileCompanionChatError}>
+                  {companionChatError}
+                </Text>
+              ) : null}
+              {companionChatReply ? (
+                <View style={styles.profileCompanionChatReply}>
+                  <Text style={styles.profileCompanionChatReplyLabel}>
+                    {selectedProfileCompanion.name}
+                  </Text>
+                  <Text style={styles.profileCompanionChatReplyText}>
+                    {companionChatReply}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
             <View style={styles.profileSectionHeader}>
               <Text style={styles.profileSectionTitle}>Tampilan</Text>
               <Text style={styles.profileSectionMeta}>PREFERENSI PERANGKAT</Text>
@@ -3870,7 +5218,10 @@ function AppContent() {
             </Text>
             {isSpeechVoiceLoading ? (
               <View style={styles.profileSpeechLoading}>
-                <ActivityIndicator color="#77e0c7" size="small" />
+                <ActivityIndicator
+                  color={isLightTheme ? '#42610f' : '#c3f36b'}
+                  size="small"
+                />
                 <Text style={styles.profileSpeechHint}>Memuat suara perangkat...</Text>
               </View>
             ) : (
@@ -3946,7 +5297,10 @@ function AppContent() {
             </Pressable>
             {isSpeechVoiceSaving ? (
               <View style={styles.profileSpeechLoading}>
-                <ActivityIndicator color="#77e0c7" size="small" />
+                <ActivityIndicator
+                  color={isLightTheme ? '#42610f' : '#c3f36b'}
+                  size="small"
+                />
                 <Text style={styles.profileSpeechHint}>Menyimpan preferensi suara...</Text>
               </View>
             ) : null}
@@ -3997,6 +5351,8 @@ function AppContent() {
                   </Text>
                 </View>
               </Pressable>
+            ) : null}
+              </>
             ) : null}
           </ScrollView>
         ) : null}
@@ -4406,12 +5762,24 @@ function AppContent() {
             <View
               style={[
                 styles.liveActionMenuIconBox,
-                { backgroundColor: isBroadcastRecording ? '#7f1d1d' : '#164e63' },
+                {
+                  backgroundColor: isBroadcastRecording
+                    ? '#7f1d1d'
+                    : isLightTheme
+                      ? '#f1f8df'
+                      : '#26351d',
+                },
               ]}
             >
               <Svg width={25} height={25} viewBox="0 0 24 24">
                 <Path
-                  fill={isBroadcastRecording ? '#fecaca' : '#a5f3fc'}
+                  fill={
+                    isBroadcastRecording
+                      ? '#fecaca'
+                      : isLightTheme
+                        ? '#42610f'
+                        : '#c3f36b'
+                  }
                   d={
                     isBroadcastRecording
                       ? 'M7 7h10v10H7z'
@@ -4422,13 +5790,19 @@ function AppContent() {
             </View>
             {isBroadcastStarting ? (
               <View style={styles.broadcastRecordingIndicator}>
-                <ActivityIndicator color="#e0f2fe" size="small" />
+                <ActivityIndicator
+                  color={isLightTheme ? '#42610f' : '#c3f36b'}
+                  size="small"
+                />
               </View>
             ) : isBroadcastRecording ? (
               <View style={styles.broadcastRecordingDot} />
             ) : isBroadcastSending ? (
               <View style={styles.broadcastRecordingIndicator}>
-                <ActivityIndicator color="#e0f2fe" size="small" />
+                <ActivityIndicator
+                  color={isLightTheme ? '#42610f' : '#c3f36b'}
+                  size="small"
+                />
               </View>
             ) : (
               <>
@@ -4524,7 +5898,7 @@ function AppContent() {
             {
               backgroundColor: isBroadcastRecording
                 ? '#b91c1c'
-                : liveAbility?.color ?? '#0e7490',
+                : liveAbility?.color ?? '#c3f36b',
             },
             isLiveActionMenuOpen && styles.liveActionHubButtonOpen,
           ]}
@@ -4583,7 +5957,7 @@ function AppContent() {
               <View style={styles.liveActionHubMicBadge}>
                 <Svg width={11} height={11} viewBox="0 0 24 24">
                   <Path
-                    fill="#cffafe"
+                    fill={isLightTheme ? '#42610f' : '#c3f36b'}
                     d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a1 1 0 0 0-2 0 3 3 0 0 1-6 0 1 1 0 0 0-2 0 5 5 0 0 0 4 4.9V19h-2a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-3.1a5 5 0 0 0 4-4.9Z"
                   />
                 </Svg>
@@ -5860,7 +7234,7 @@ function AppContent() {
     if (!room?.playArea) return null;
     const liveRoleAccent = activePlayer?.role
       ? ROLE_REVEAL_THEMES[activePlayer.role].accent
-      : '#4dd9b5';
+      : '#c3f36b';
     const liveTopInset = Platform.OS === 'android' ? insets.top : 0;
     const liveBottomInset = Platform.OS === 'android' ? insets.bottom : 0;
     const liveDetailsTop = Math.max(
@@ -5985,7 +7359,7 @@ function AppContent() {
                   numberOfLines={1}
                   style={[
                     styles.liveRoleText,
-                    { color: isLightTheme ? '#0e7490' : liveRoleAccent },
+                    { color: isLightTheme ? '#42610f' : liveRoleAccent },
                   ]}
                 >
                   {activePlayer?.isSpectator
@@ -6550,7 +7924,7 @@ function AppContent() {
           />
           <Text style={styles.startupLoadingTitle}>PETAK</Text>
           <ActivityIndicator
-            color={isLightTheme ? '#0e7490' : '#67e8f9'}
+            color={isLightTheme ? '#42610f' : '#c3f36b'}
             size="small"
           />
           <Text style={styles.startupLoadingMessage}>Memeriksa sesi akun...</Text>
@@ -6849,6 +8223,7 @@ function AppContent() {
                 style={styles.featureLauncherEntry}
                 onPress={() => {
                   setIsFeatureLauncherOpen(false);
+                  closeCharacterSettings();
                   setIsProfileOpen(true);
                 }}
               >
@@ -6887,6 +8262,7 @@ function AppContent() {
           </Pressable>
         </View>
       ) : null}
+      {companionVoiceControl}
     </SafeAreaView>
   );
 }
@@ -7173,7 +8549,7 @@ function createStyles(isLightTheme: boolean) {
   },
   liveGameLogItemLatest: {
     borderColor: 'rgba(34, 211, 238, 0.42)',
-    backgroundColor: 'rgba(8, 145, 178, 0.16)',
+    backgroundColor: 'rgba(195, 243, 107, 0.16)',
   },
   liveGameLogItemDot: {
     width: 6,
@@ -7593,17 +8969,78 @@ function createStyles(isLightTheme: boolean) {
     flex: 1,
     backgroundColor: '#0b1725',
   },
+  profileCharacterPaletteContainer: {
+    backgroundColor: isLightTheme ? '#f8fafc' : '#0c111b',
+  },
+  profileCharacterPaletteContent: {
+    backgroundColor: isLightTheme ? '#f8fafc' : '#0c111b',
+  },
+  profileCharacterPaletteHeader: {
+    backgroundColor: isLightTheme ? '#f8fafc' : '#0c111b',
+    borderBottomColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.11)',
+  },
+  profileCharacterPaletteEyebrow: {
+    color: isLightTheme ? '#42610f' : '#c3f36b',
+  },
+  profileCharacterPaletteTitle: {
+    color: isLightTheme ? '#0f172a' : '#f3f6fb',
+  },
+  profileCharacterPaletteClose: {
+    backgroundColor: isLightTheme ? '#e2e8f0' : '#1b2636',
+  },
+  profileCharacterPaletteCloseText: {
+    color: isLightTheme ? '#0f172a' : '#f3f6fb',
+  },
+  profileCharacterPaletteBackButton: {
+    backgroundColor: 'transparent',
+  },
+  profileCharacterPaletteAccentText: {
+    color: isLightTheme ? '#42610f' : '#c3f36b',
+  },
+  profileCharacterPaletteText: {
+    color: isLightTheme ? '#0f172a' : '#f3f6fb',
+  },
+  profileCharacterPaletteMuted: {
+    color: isLightTheme ? '#475569' : '#9aa8bb',
+  },
+  profileCharacterPaletteCard: {
+    backgroundColor: isLightTheme ? '#ffffff' : '#151d2b',
+    borderColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.18)',
+  },
+  profileCharacterPaletteCardOpen: {
+    backgroundColor: isLightTheme ? '#f1f8df' : '#26351d',
+    borderColor: isLightTheme ? '#547a14' : '#c3f36b',
+  },
+  profileCharacterPaletteChoice: {
+    backgroundColor: isLightTheme ? '#ffffff' : '#151d2b',
+    borderColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.18)',
+  },
+  profileCharacterPaletteChoiceSelected: {
+    backgroundColor: isLightTheme ? '#f1f8df' : '#26351d',
+    borderColor: isLightTheme ? '#547a14' : '#c3f36b',
+  },
+  profileCharacterPaletteChoiceImage: {
+    backgroundColor: isLightTheme ? '#e2e8f0' : '#1b2636',
+  },
   profileContent: {
     flexGrow: 1,
     padding: 20,
     paddingBottom: 32,
   },
+  profileIdentityShowcase: {
+    position: 'relative',
+    height: 136,
+    marginBottom: 14,
+  },
   profileIdentityCard: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
-    padding: 18,
-    marginBottom: 22,
+    minHeight: 100,
+    paddingVertical: 16,
+    paddingLeft: 16,
+    paddingRight: 96,
+    marginTop: 16,
     backgroundColor: '#122237',
     borderWidth: 1,
     borderColor: '#294057',
@@ -7617,6 +9054,182 @@ function createStyles(isLightTheme: boolean) {
     borderColor: '#67e8f9',
     borderRadius: 29,
     resizeMode: 'cover',
+  },
+  profileAvatarTapTarget: {
+    width: 64,
+    height: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  profileAvatarEditBadge: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0e7490',
+    borderWidth: 2,
+    borderColor: '#122237',
+    borderRadius: 10,
+  },
+  profileAvatarEditBadgeText: {
+    color: '#ecfeff',
+    fontSize: 10,
+    fontWeight: '900',
+    lineHeight: 12,
+  },
+  profileIdentityCompanionOverlay: {
+    position: 'absolute',
+    top: -8,
+    right: -10,
+    width: 148,
+    height: 148,
+    zIndex: 2,
+    elevation: 3,
+  },
+  profileIdentityCompanion: {
+    width: 148,
+    height: 148,
+  },
+  profileIdentityCompanionTag: {
+    position: 'absolute',
+    top: 10,
+    right: 12,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    backgroundColor: '#0e7490',
+    borderRadius: 6,
+  },
+  profileIdentityCompanionTagText: {
+    color: '#ecfeff',
+    fontSize: 8,
+    fontWeight: '900',
+  },
+  profileIdentityCompanionEditBadge: {
+    position: 'absolute',
+    right: 12,
+    bottom: 10,
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0e7490',
+    borderWidth: 2,
+    borderColor: '#0b1725',
+    borderRadius: 10,
+  },
+  profileCharacterSettingsButton: {
+    minHeight: 68,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 22,
+    backgroundColor: '#122237',
+    borderWidth: 1,
+    borderColor: '#294057',
+    borderRadius: 15,
+  },
+  profileCharacterSettingsCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  profileCharacterSettingsTitle: {
+    color: '#f3f7ff',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  profileCharacterSettingsHint: {
+    color: '#9db0c4',
+    fontSize: 10,
+  },
+  profileCharacterSettingsArrow: {
+    color: '#67e8f9',
+    fontSize: 28,
+    fontWeight: '500',
+    lineHeight: 30,
+  },
+  profileCharacterBackButton: {
+    minHeight: 44,
+    justifyContent: 'center',
+    alignSelf: 'flex-start',
+    paddingRight: 12,
+    marginBottom: 8,
+  },
+  profileCharacterBackText: {
+    color: '#67e8f9',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  profileCharacterSelectionCards: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 8,
+  },
+  profileCharacterSelectionCard: {
+    width: '48%',
+    minWidth: 130,
+    minHeight: 88,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 9,
+    backgroundColor: '#122237',
+    borderWidth: 1,
+    borderColor: '#294057',
+    borderRadius: 14,
+  },
+  profileCharacterSelectionCardOpen: {
+    backgroundColor: '#163b43',
+    borderColor: '#77e0c7',
+  },
+  profileCharacterSelectionAvatar: {
+    width: 46,
+    height: 46,
+    backgroundColor: isLightTheme ? '#e2e8f0' : '#0b1725',
+    borderRadius: 23,
+    resizeMode: 'cover',
+  },
+  profileCharacterSelectionCompanion: {
+    width: 50,
+    height: 58,
+  },
+  profileCharacterSelectionCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  profileCharacterSelectionEyebrow: {
+    color: '#67e8f9',
+    fontSize: 7,
+    fontWeight: '900',
+    letterSpacing: 0.6,
+  },
+  profileCharacterSelectionName: {
+    color: '#f3f7ff',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  profileCharacterSelectionAction: {
+    color: '#9db0c4',
+    fontSize: 8,
+  },
+  profileCharacterSelectionArrow: {
+    color: '#67e8f9',
+    fontSize: 20,
+    fontWeight: '500',
+  },
+  profileCharacterChooserHint: {
+    color: '#9db0c4',
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 12,
   },
   profileAvatarChoiceGrid: {
     flexDirection: 'row',
@@ -7662,6 +9275,406 @@ function createStyles(isLightTheme: boolean) {
     lineHeight: 9,
     fontWeight: '700',
     textAlign: 'center',
+  },
+  profileCompanionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: 12,
+    marginBottom: 8,
+  },
+  profileCompanionChoice: {
+    width: '31%',
+    minHeight: 132,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    padding: 8,
+    backgroundColor: '#122237',
+    borderWidth: 1,
+    borderColor: '#294057',
+    borderRadius: 14,
+  },
+  profileCompanionChoiceSelected: {
+    borderColor: '#77e0c7',
+    backgroundColor: '#163b43',
+  },
+  profileSystemCompanionChoice: {
+    backgroundColor: isLightTheme ? '#fffbeb' : '#211f1a',
+    borderColor: isLightTheme ? '#d6a64e' : '#b88a46',
+  },
+  profileCompanionImage: {
+    width: 96,
+    height: 96,
+  },
+  profileCompanionName: {
+    color: '#cfe1f7',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  profileSystemCompanionBadge: {
+    color: isLightTheme ? '#92400e' : '#ffcf83',
+    fontSize: 7,
+    fontWeight: '900',
+    letterSpacing: 0.4,
+  },
+  profileSystemCompanionNotice: {
+    gap: 4,
+    padding: 12,
+    marginBottom: 12,
+    backgroundColor: isLightTheme ? '#fffbeb' : '#2b2114',
+    borderWidth: 1,
+    borderColor: isLightTheme ? '#d6a64e' : '#8c6a37',
+    borderRadius: 12,
+  },
+  profileSystemCompanionNoticeTitle: {
+    color: isLightTheme ? '#713f12' : '#ffcf83',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  profileSystemCompanionNoticeText: {
+    color: isLightTheme ? '#713f12' : '#f3d9ae',
+    fontSize: 10,
+    lineHeight: 15,
+  },
+  profileCompanionHint: {
+    color: '#9db0c4',
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 10,
+  },
+  profileCompanionPrivacyCard: {
+    gap: 10,
+    padding: 14,
+    marginBottom: 22,
+    backgroundColor: isLightTheme ? '#ffffff' : '#151d2b',
+    borderWidth: 1,
+    borderColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.18)',
+    borderRadius: 16,
+  },
+  profileCompanionPrivacyToggle: {
+    minHeight: 54,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  profileCompanionPrivacyCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  profileCompanionPrivacyTitle: {
+    color: isLightTheme ? '#0f172a' : '#f3f6fb',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  profileCompanionPrivacyHint: {
+    color: isLightTheme ? '#475569' : '#9aa8bb',
+    fontSize: 10,
+    lineHeight: 15,
+  },
+  profileCompanionPrivacyState: {
+    color: isLightTheme ? '#475569' : '#9aa8bb',
+    minWidth: 44,
+    textAlign: 'right',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.6,
+  },
+  profileCompanionPrivacyStateEnabled: {
+    color: isLightTheme ? '#42610f' : '#c3f36b',
+  },
+  profileCompanionPrivacyDisclosure: {
+    color: isLightTheme ? '#475569' : '#9aa8bb',
+    fontSize: 10,
+    lineHeight: 15,
+  },
+  profileCompanionPrivacyError: {
+    color: '#b45309',
+    fontSize: 10,
+    lineHeight: 15,
+  },
+  profileCompanionStats: {
+    gap: 8,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.18)',
+  },
+  profileCompanionStatsTitle: {
+    color: isLightTheme ? '#42610f' : '#c3f36b',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  profileCompanionStatsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  profileCompanionStatsItem: {
+    flexGrow: 1,
+    minWidth: '28%',
+    gap: 3,
+    padding: 8,
+    backgroundColor: isLightTheme ? '#f1f8df' : '#1d2615',
+    borderRadius: 10,
+  },
+  profileCompanionStatsValue: {
+    color: isLightTheme ? '#15200a' : '#c3f36b',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  profileCompanionStatsLabel: {
+    color: isLightTheme ? '#475569' : '#9aa8bb',
+    fontSize: 8,
+  },
+  profileCompanionChatCard: {
+    gap: 9,
+    padding: 14,
+    marginBottom: 22,
+    backgroundColor: isLightTheme ? '#ffffff' : '#151d2b',
+    borderWidth: 1,
+    borderColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.18)',
+    borderRadius: 16,
+  },
+  profileCompanionChatTitle: {
+    color: isLightTheme ? '#0f172a' : '#f3f6fb',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  profileCompanionChatHint: {
+    color: isLightTheme ? '#475569' : '#9aa8bb',
+    fontSize: 10,
+    lineHeight: 15,
+  },
+  profileCompanionChatInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  profileCompanionChatInput: {
+    flex: 1,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    color: isLightTheme ? '#0f172a' : '#f3f6fb',
+    backgroundColor: isLightTheme ? '#f8fafc' : '#0c111b',
+    borderWidth: 1,
+    borderColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.22)',
+    borderRadius: 11,
+  },
+  profileCompanionChatSend: {
+    minWidth: 68,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    backgroundColor: isLightTheme ? '#42610f' : '#c3f36b',
+    borderRadius: 11,
+  },
+  profileCompanionChatSendText: {
+    color: isLightTheme ? '#ffffff' : '#15200a',
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  profileCompanionChatCounter: {
+    color: isLightTheme ? '#64748b' : '#718096',
+    fontSize: 8,
+    textAlign: 'right',
+  },
+  profileCompanionChatError: {
+    color: isLightTheme ? '#b45309' : '#ffb454',
+    fontSize: 10,
+    lineHeight: 15,
+  },
+  profileCompanionChatReply: {
+    gap: 5,
+    padding: 11,
+    backgroundColor: isLightTheme ? '#f1f8df' : '#1d2615',
+    borderLeftWidth: 3,
+    borderLeftColor: isLightTheme ? '#547a14' : '#c3f36b',
+    borderRadius: 11,
+  },
+  profileCompanionChatReplyLabel: {
+    color: isLightTheme ? '#42610f' : '#c3f36b',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  profileCompanionChatReplyText: {
+    color: isLightTheme ? '#0f172a' : '#f3f6fb',
+    fontSize: 11,
+    lineHeight: 17,
+  },
+  companionVoiceOverlay: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    alignItems: 'flex-start',
+    justifyContent: 'flex-end',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingBottom: 22,
+  },
+  companionVoicePanel: {
+    width: 330,
+    maxWidth: '100%',
+    maxHeight: 420,
+    overflow: 'hidden',
+    backgroundColor: isLightTheme ? '#ffffff' : '#111a27',
+    borderWidth: 1,
+    borderColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.22)',
+    borderRadius: 18,
+    shadowColor: '#000000',
+    shadowOpacity: 0.28,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 16,
+  },
+  companionVoicePanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingTop: 13,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: isLightTheme ? '#e2e8f0' : 'rgba(187, 204, 226, 0.14)',
+  },
+  companionVoicePanelHeading: {
+    flex: 1,
+    gap: 2,
+  },
+  companionVoicePanelEyebrow: {
+    color: isLightTheme ? '#64748b' : '#9aa8bb',
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  companionVoicePanelTitle: {
+    color: isLightTheme ? '#0f172a' : '#f3f6fb',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  companionVoicePanelStatus: {
+    color: isLightTheme ? '#64748b' : '#9aa8bb',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  companionVoicePanelStatusActive: {
+    color: isLightTheme ? '#42610f' : '#c3f36b',
+  },
+  companionVoicePanelClose: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: isLightTheme ? '#f1f5f9' : '#202c3b',
+    borderRadius: 10,
+  },
+  companionVoicePanelCloseText: {
+    color: isLightTheme ? '#334155' : '#dbe6f5',
+    fontSize: 20,
+    lineHeight: 22,
+  },
+  companionVoicePanelBody: {
+    flexShrink: 1,
+  },
+  companionVoicePanelContent: {
+    gap: 9,
+    padding: 12,
+  },
+  companionVoicePanelMessage: {
+    gap: 4,
+    padding: 10,
+    backgroundColor: isLightTheme ? '#f1f5f9' : '#1a2635',
+    borderRadius: 11,
+  },
+  companionVoicePanelReply: {
+    gap: 4,
+    padding: 10,
+    backgroundColor: isLightTheme ? '#f1f8df' : '#1d2615',
+    borderLeftWidth: 3,
+    borderLeftColor: isLightTheme ? '#547a14' : '#c3f36b',
+    borderRadius: 11,
+  },
+  companionVoicePanelLabel: {
+    color: isLightTheme ? '#42610f' : '#c3f36b',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  companionVoicePanelText: {
+    color: isLightTheme ? '#0f172a' : '#f3f6fb',
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  companionVoicePanelQueue: {
+    color: isLightTheme ? '#475569' : '#cbd5e1',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  companionVoicePanelError: {
+    color: isLightTheme ? '#b45309' : '#ffb454',
+    fontSize: 10,
+    lineHeight: 15,
+  },
+  companionVoicePanelHint: {
+    color: isLightTheme ? '#64748b' : '#9aa8bb',
+    fontSize: 9,
+    lineHeight: 14,
+  },
+  companionVoiceToggle: {
+    minWidth: 76,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    backgroundColor: isLightTheme ? '#ffffff' : '#182331',
+    borderWidth: 1,
+    borderColor: isLightTheme ? '#94a3b8' : '#45566b',
+    borderRadius: 15,
+    shadowColor: '#000000',
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 12,
+  },
+  companionVoiceToggleEnabled: {
+    backgroundColor: isLightTheme ? '#c3f36b' : '#c3f36b',
+    borderColor: '#c3f36b',
+  },
+  companionVoiceToggleText: {
+    color: isLightTheme ? '#334155' : '#e2e8f0',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.4,
+  },
+  companionVoiceToggleTextEnabled: {
+    color: '#15200a',
+  },
+  companionVoicePanelLauncher: {
+    minWidth: 76,
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    backgroundColor: isLightTheme ? '#ffffff' : '#182331',
+    borderWidth: 1,
+    borderColor: isLightTheme ? '#94a3b8' : '#45566b',
+    borderRadius: 13,
+  },
+  companionVoicePanelLauncherText: {
+    color: isLightTheme ? '#334155' : '#e2e8f0',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.4,
+  },
+  profileCompanionError: {
+    color: '#ffb454',
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 12,
   },
   profileSpeechHint: {
     color: '#9db0c4',
@@ -8605,7 +10618,7 @@ function createStyles(isLightTheme: boolean) {
     justifyContent: 'center',
     backgroundColor: 'rgba(15, 23, 42, 0.68)',
     borderWidth: 1,
-    borderColor: 'rgba(103, 232, 249, 0.5)',
+    borderColor: 'rgba(195, 243, 107, 0.5)',
     borderRadius: 22,
     transform: [{ rotate: '4deg' }],
   },
@@ -10703,11 +12716,22 @@ function createStyles(isLightTheme: boolean) {
         profileModalContainer: { backgroundColor: '#f8fafc' },
         profileIdentityCard: { backgroundColor: '#ffffff', borderColor: '#cbd5e1' },
         profileAvatar: { backgroundColor: '#e0f2fe', borderColor: '#0891b2' },
+        profileIdentityCompanionTag: { backgroundColor: '#0e7490' },
+        profileCharacterSettingsButton: { backgroundColor: '#ffffff', borderColor: '#cbd5e1' },
+        profileCharacterSettingsTitle: { color: '#0f172a' },
+        profileCharacterSettingsHint: { color: '#475569' },
+        profileCharacterSettingsArrow: { color: '#0369a1' },
+        profileCharacterBackText: { color: '#0369a1' },
         profileAvatarChoice: { backgroundColor: '#ffffff', borderColor: '#cbd5e1' },
         profileAvatarChoiceSelected: { backgroundColor: '#ecfdf5' },
         profileAvatarChoiceImage: { backgroundColor: '#e2e8f0' },
         profileAvatarChoiceLabel: { color: '#0f172a' },
         profileAvatarChoiceProgress: { color: '#92400e' },
+        profileCompanionChoice: { backgroundColor: '#ffffff', borderColor: '#cbd5e1' },
+        profileCompanionChoiceSelected: { backgroundColor: '#ecfdf5' },
+        profileCompanionName: { color: '#0f172a' },
+        profileCompanionHint: { color: '#475569' },
+        profileCompanionError: { color: '#b45309' },
         profileSpeechHint: { color: '#475569' },
         profileSpeechRadio: { borderColor: '#64748b' },
         profileSpeechRadioSelected: { backgroundColor: '#0e7490' },
@@ -10772,7 +12796,7 @@ function createStyles(isLightTheme: boolean) {
         gameTimelinePage: { backgroundColor: '#f8fafc' },
         lobbyDetailsModalContainer: { backgroundColor: '#f8fafc' },
         lobbySettingsHero: { backgroundColor: '#ffffff', borderColor: '#cbd5e1' },
-        lobbySettingsHeroGlow: { backgroundColor: 'rgba(8, 145, 178, 0.08)' },
+        lobbySettingsHeroGlow: { backgroundColor: 'rgba(168, 223, 72, 0.08)' },
         lobbySettingsEyebrow: { color: '#0369a1' },
         lobbySettingsCode: { color: '#0f172a' },
         lobbySettingsHint: { color: '#475569' },
@@ -10805,7 +12829,7 @@ function createStyles(isLightTheme: boolean) {
         lobbyDetailsButtonIcon: { color: '#075985', backgroundColor: '#e0f2fe' },
         lobbyDetailsButtonText: { color: '#164e63' },
         lobbyHeroCard: { backgroundColor: '#ffffff', borderColor: '#cbd5e1' },
-        lobbyHeroGlow: { backgroundColor: 'rgba(8, 145, 178, 0.08)' },
+        lobbyHeroGlow: { backgroundColor: 'rgba(168, 223, 72, 0.08)' },
         lobbyTitle: { color: '#0f172a' },
         lobbyHeroDescription: { color: '#475569' },
         lobbyHeroAvatarFrame: { backgroundColor: 'rgba(226, 232, 240, 0.85)' },
@@ -11031,19 +13055,106 @@ function createStyles(isLightTheme: boolean) {
         resultBox: { backgroundColor: '#ffffff' },
   });
 
+  const accentColorMap: Record<string, Record<string, string>> = isLightTheme
+    ? {
+        color: {
+          '#67e8f9': '#42610f',
+          '#77e0c7': '#42610f',
+          '#4dd9b5': '#42610f',
+          '#0e7490': '#42610f',
+          '#0369a1': '#42610f',
+          '#0891b2': '#42610f',
+          '#075985': '#42610f',
+          '#164e63': '#15200a',
+          '#cffafe': '#42610f',
+          '#a5f3fc': '#42610f',
+          '#7dd3fc': '#42610f',
+        },
+        backgroundColor: {
+          '#4dd9b5': '#a8df48',
+          '#77e0c7': '#a8df48',
+          '#0e7490': '#42610f',
+          '#164e63': '#c3f36b',
+          '#cffafe': '#f1f8df',
+          '#ecfeff': '#f1f8df',
+          '#e0f2fe': '#f1f8df',
+          '#f0f9ff': '#f1f8df',
+          '#ecfdf5': '#f1f8df',
+        },
+        borderColor: {
+          '#67e8f9': '#547a14',
+          '#77e0c7': '#547a14',
+          '#4dd9b5': '#547a14',
+          '#0e7490': '#547a14',
+          '#0891b2': '#547a14',
+          '#7dd3fc': '#547a14',
+          '#bae6fd': '#a7c477',
+          '#cffafe': '#547a14',
+        },
+        borderTopColor: {
+          '#4dd9b5': '#547a14',
+        },
+        borderLeftColor: {
+          '#4dd9b5': '#547a14',
+        },
+      }
+    : {
+        color: {
+          '#67e8f9': '#c3f36b',
+          '#77e0c7': '#c3f36b',
+          '#4dd9b5': '#c3f36b',
+          '#0e7490': '#c3f36b',
+          '#cffafe': '#c3f36b',
+          '#a5f3fc': '#c3f36b',
+          '#7dd3fc': '#c3f36b',
+        },
+        backgroundColor: {
+          '#4dd9b5': '#c3f36b',
+          '#77e0c7': '#c3f36b',
+          '#0e7490': '#42610f',
+          '#164e63': '#42610f',
+          '#163b43': '#26351d',
+          '#102d3a': '#1d2615',
+        },
+        borderColor: {
+          '#67e8f9': '#a8df48',
+          '#77e0c7': '#a8df48',
+          '#4dd9b5': '#a8df48',
+          '#0e7490': '#a8df48',
+          '#a7f3d0': '#a8df48',
+          '#1c6471': '#a8df48',
+          '#2dd4bf': '#a8df48',
+          '#cffafe': '#a8df48',
+          '#a5f3fc': '#a8df48',
+        },
+        borderLeftColor: {
+          '#4dd9b5': '#a8df48',
+        },
+      };
+
+  const applyAccentPalette = (style: object) => Object.fromEntries(
+    Object.entries(style).map(([property, value]) => {
+      if (typeof value !== 'string') return [property, value];
+      return [property, accentColorMap[property]?.[value] ?? value];
+    })
+  );
+
   const mergedStyles = new Map<string, object>();
   for (const [styleName, baseStyle] of Object.entries(baseStyles)) {
     const override = isLightTheme
       ? lightThemeOverrides[styleName as keyof typeof lightThemeOverrides]
       : undefined;
+    const paletteBaseStyle = applyAccentPalette(baseStyle);
     mergedStyles.set(
       styleName,
-      override ? { ...baseStyle, ...override } : baseStyle
+      override
+        ? { ...paletteBaseStyle, ...applyAccentPalette(override) }
+        : paletteBaseStyle
     );
   }
   for (const [styleName, override] of Object.entries(lightThemeOverrides)) {
     if (!(styleName in baseStyles)) {
-      mergedStyles.set(styleName, isLightTheme ? override : {});
+      mergedStyles.set(styleName, isLightTheme ? applyAccentPalette(override) : {});
     }
   }
 

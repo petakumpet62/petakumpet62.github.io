@@ -1,6 +1,6 @@
 const CACHE_PREFIX = 'petak-pwa-';
 // Increment this version when the app shell or PWA assets change.
-const CACHE_NAME = `${CACHE_PREFIX}v3`;
+const CACHE_NAME = `${CACHE_PREFIX}v4`;
 const APP_ROOT_URL = new URL('./', self.registration.scope).href;
 const PRECACHE_URLS = [
   APP_ROOT_URL,
@@ -59,7 +59,7 @@ self.addEventListener('fetch', (event) => {
     event.respondWith((async () => {
       try {
         const response = await fetch(request);
-        if (response.ok) {
+        if (response.ok && requestUrl.pathname === new URL(APP_ROOT_URL).pathname) {
           const cache = await caches.open(CACHE_NAME);
           await cache.put(APP_ROOT_URL, response.clone());
         }

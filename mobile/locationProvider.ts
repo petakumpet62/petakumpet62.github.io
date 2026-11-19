@@ -13,7 +13,10 @@ export interface LocationProvider {
   requestPermission(): Promise<boolean>;
   hasLocationServicesEnabled(): Promise<boolean>;
   getCurrentLocation(): Promise<LocationFix>;
-  watchLocation(onLocation: (location: LocationFix) => void): Promise<LocationSubscription>;
+  watchLocation(
+    onLocation: (location: LocationFix) => void,
+    onError?: (message: string) => void
+  ): Promise<LocationSubscription>;
 }
 
 function toLocationFix(position: ExpoLocation.LocationObject): LocationFix {
@@ -50,7 +53,7 @@ export const deviceLocationProvider: LocationProvider = {
     } catch (error) {
       if (timeoutId) clearTimeout(timeoutId);
       const lastKnown = await ExpoLocation.getLastKnownPositionAsync({
-        maxAge: 30_000,
+        maxAge: 15_000,
         requiredAccuracy: 100,
       }).catch(() => null);
       if (lastKnown) return toLocationFix(lastKnown);
@@ -58,14 +61,15 @@ export const deviceLocationProvider: LocationProvider = {
     }
   },
 
-  watchLocation(onLocation) {
+  watchLocation(onLocation, onError) {
     return ExpoLocation.watchPositionAsync(
       {
         accuracy: ExpoLocation.Accuracy.High,
         distanceInterval: 5,
         timeInterval: 5000,
       },
-      (position) => onLocation(toLocationFix(position))
+      (position) => onLocation(toLocationFix(position)),
+      onError
     );
   },
 };

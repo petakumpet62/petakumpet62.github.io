@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://petakumpet62.github.io/sitemap.xml

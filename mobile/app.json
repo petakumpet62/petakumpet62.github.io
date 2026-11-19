@@ -22,7 +22,7 @@
     },
     "android": {
       "edgeToEdgeEnabled": true,
-      "softwareKeyboardLayoutMode": "pan",
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "backgroundColor": "#0c111b",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -72,6 +72,16 @@
         "expo-location",
         {
           "locationWhenInUsePermission": "Izinkan PETAK menggunakan lokasi saat bermain untuk memeriksa batas area."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Izinkan PETAK menggunakan mikrofon untuk Voice Chat AI.",
+          "speechRecognitionPermission": "Izinkan PETAK mengenali ucapan untuk Voice Chat AI.",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
         }
       ]
     ]

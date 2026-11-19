@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.repository == 'petakumpet62/petakumpet62.github.io'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -38,6 +39,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
         working-directory: mobile
+
+      - name: Validate public backend URL
+        run: |
+          if [ -z "$EXPO_PUBLIC_SOCKET_URL" ]; then
+            echo "Set the EXPO_PUBLIC_SOCKET_URL Actions variable to the public HTTPS backend URL." >&2
+            exit 1
+          fi
+          if ! node -e '
+            const value = process.env.EXPO_PUBLIC_SOCKET_URL;
+            if (
+              !URL.canParse(value) ||
+              new URL(value).protocol !== "https:" ||
+              !new URL(value).hostname
+            ) process.exit(1);
+          '; then
+            echo "EXPO_PUBLIC_SOCKET_URL must be a valid public HTTPS URL." >&2
+            exit 1
+          fi
+        env:
+          EXPO_PUBLIC_SOCKET_URL: ${{ vars.EXPO_PUBLIC_SOCKET_URL }}
 
       - name: Build core Expo web app
         run: npx expo export --platform web --output-dir dist

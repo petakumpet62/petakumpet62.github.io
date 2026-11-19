@@ -1,5 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
+import { requireOptionalNativeModule } from 'expo';
+import type { ExpoSpeechRecognitionErrorCode } from 'expo-speech-recognition';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -18,6 +20,7 @@ import { Asset } from 'expo-asset';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ActivityIndicator,
+  AppState,
   Animated,
   FlatList,
   Image,
@@ -28,6 +31,7 @@ import {
   Pressable,
   SafeAreaView,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -52,6 +56,8 @@ import type { LocationFix, LocationSubscription } from './locationProvider';
 import { getUwbAvailability } from './modules/petak-uwb';
 import type { UwbAvailability } from './modules/petak-uwb';
 
+type CompanionSpeechRecognitionModule =
+  typeof import('expo-speech-recognition')['ExpoSpeechRecognitionModule'];
 type Role = 'SEEKER' | 'HIDER' | 'IMPOSTOR';
 type Phase = 'LOBBY' | 'PREPARATION' | 'PLAYING' | 'FINISHED' | 'CANCELLED';
 type CompanionPage =
@@ -62,32 +68,6 @@ type CompanionPage =
   | 'match'
   | 'results'
   | 'scanner';
-
-type CompanionSpeechRecognitionResult = ArrayLike<{ transcript: string }> & {
-  isFinal: boolean;
-};
-type CompanionSpeechRecognitionEvent = Event & {
-  results: ArrayLike<CompanionSpeechRecognitionResult>;
-  resultIndex: number;
-};
-type CompanionSpeechRecognitionErrorEvent = Event & {
-  error: string;
-};
-type CompanionSpeechRecognition = {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  onresult: ((event: CompanionSpeechRecognitionEvent) => void) | null;
-  onerror: ((event: CompanionSpeechRecognitionErrorEvent) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-};
-type CompanionSpeechRecognitionConstructor = new () => CompanionSpeechRecognition;
-type CompanionSpeechRecognitionWindow = Window & {
-  SpeechRecognition?: CompanionSpeechRecognitionConstructor;
-  webkitSpeechRecognition?: CompanionSpeechRecognitionConstructor;
-};
 
 type AppAlert = {
   message: string;
@@ -120,6 +100,112 @@ type LandmarkSubmissionStatus = {
 
 type LocationStatus = 'UNKNOWN' | 'INSIDE' | 'OUTSIDE' | 'INACCURATE' | 'UNCERTAIN' | null;
 type ProximityThreatLevel = 'SAFE' | 'GREEN' | 'YELLOW' | 'RED';
+type BackdropPage =
+  | 'AUTH'
+  | 'HOME'
+  | 'LOBBY'
+  | 'GAME'
+  | 'HIDER'
+  | 'IMPOSTOR'
+  | 'RESULT'
+  | 'SCANNER'
+  | 'PROFILE'
+  | 'THEME'
+  | 'CHARACTER'
+  | 'LEADERBOARD'
+  | 'TIMELINE'
+  | 'LOBBY_DETAILS';
+type BackdropColors = readonly [string, string, string, string];
+
+const pageBackdropPalettes: Record<
+  BackdropPage,
+  { light: BackdropColors; dark: BackdropColors; lightAccent: string; darkAccent: string }
+> = {
+  AUTH: {
+    light: ['#e8f4d8', '#e3f4f0', '#e9effb', '#f8fafc'],
+    dark: ['#17271e', '#102a2b', '#111e2c', '#0c111b'],
+    lightAccent: '#42610f',
+    darkAccent: '#77e0c7',
+  },
+  HOME: {
+    light: ['#e4f6e8', '#ddf5f0', '#eaf0ff', '#f8fafc'],
+    dark: ['#142e2c', '#153b3e', '#192b47', '#0c111b'],
+    lightAccent: '#0f766e',
+    darkAccent: '#4dd9b5',
+  },
+  LOBBY: {
+    light: ['#e8edff', '#dff4f2', '#eaf6ff', '#f8fafc'],
+    dark: ['#1b2547', '#17365a', '#164a50', '#0c111b'],
+    lightAccent: '#4f46e5',
+    darkAccent: '#7dd3fc',
+  },
+  GAME: {
+    light: ['#e0f2fe', '#d9f7f4', '#e8edff', '#f8fafc'],
+    dark: ['#172e55', '#15404f', '#172c45', '#0c111b'],
+    lightAccent: '#0284c7',
+    darkAccent: '#67e8f9',
+  },
+  HIDER: {
+    light: ['#ecfccb', '#dcfce7', '#dff7f2', '#f8fafc'],
+    dark: ['#163c31', '#17473f', '#1a3347', '#0c111b'],
+    lightAccent: '#4d7c0f',
+    darkAccent: '#4ade80',
+  },
+  IMPOSTOR: {
+    light: ['#fae8ff', '#ede9fe', '#e0e7ff', '#f8fafc'],
+    dark: ['#3a1c42', '#33264f', '#1c2b49', '#0c111b'],
+    lightAccent: '#9333ea',
+    darkAccent: '#d8b4fe',
+  },
+  RESULT: {
+    light: ['#fff4d6', '#fce7f3', '#e0f2fe', '#f8fafc'],
+    dark: ['#493417', '#3a2a3e', '#17384a', '#0c111b'],
+    lightAccent: '#b45309',
+    darkAccent: '#fbbf24',
+  },
+  SCANNER: {
+    light: ['#d9fbf4', '#e0f2fe', '#e9eaff', '#f8fafc'],
+    dark: ['#12343a', '#153650', '#1b2b4a', '#0c111b'],
+    lightAccent: '#0f766e',
+    darkAccent: '#67e8f9',
+  },
+  PROFILE: {
+    light: ['#e0f2fe', '#dcfce7', '#e9f4f4', '#f8fafc'],
+    dark: ['#19354a', '#183e46', '#1d2b45', '#0c111b'],
+    lightAccent: '#0369a1',
+    darkAccent: '#67e8f9',
+  },
+  THEME: {
+    light: ['#e5f4e3', '#ddf5f0', '#eaf0ff', '#f8fafc'],
+    dark: ['#18352e', '#153b3e', '#192b47', '#0c111b'],
+    lightAccent: '#4d7c0f',
+    darkAccent: '#4ade80',
+  },
+  CHARACTER: {
+    light: ['#f3e8ff', '#e0e7ff', '#e0f2fe', '#f8fafc'],
+    dark: ['#34204b', '#2c3856', '#183a47', '#0c111b'],
+    lightAccent: '#7e22ce',
+    darkAccent: '#c4b5fd',
+  },
+  LEADERBOARD: {
+    light: ['#fef3c7', '#dcfce7', '#e0f2fe', '#f8fafc'],
+    dark: ['#423318', '#2d3f37', '#164052', '#0c111b'],
+    lightAccent: '#a16207',
+    darkAccent: '#facc15',
+  },
+  TIMELINE: {
+    light: ['#e0f2fe', '#ccfbf1', '#e0e7ff', '#f8fafc'],
+    dark: ['#172f49', '#143b4a', '#26304c', '#0c111b'],
+    lightAccent: '#0369a1',
+    darkAccent: '#7dd3fc',
+  },
+  LOBBY_DETAILS: {
+    light: ['#d9f7f0', '#e0f2fe', '#f3e8ff', '#f8fafc'],
+    dark: ['#193a41', '#203550', '#3a2b4d', '#0c111b'],
+    lightAccent: '#0f766e',
+    darkAccent: '#5eead4',
+  },
+};
 
 const hiderThreatThemes: Record<
   ProximityThreatLevel,
@@ -230,23 +316,26 @@ type Room = {
   eventLog: string[];
 };
 
-const SOCKET_URL =
-  process.env.EXPO_PUBLIC_SOCKET_URL ??
-  (Platform.OS === 'android' ? 'http://10.0.2.2:4000' : 'http://localhost:4000');
+const SOCKET_URL = (
+  process.env.EXPO_PUBLIC_SOCKET_URL?.trim() ||
+  (Platform.OS === 'android' ? 'http://10.0.2.2:4000' : 'http://localhost:4000')
+).replace(/\/+$/, '');
 const SESSION_STORAGE_KEY = 'petak.active-session';
 const ACCOUNT_STORAGE_KEY = 'petak.account-session';
 const THEME_PREFERENCE_STORAGE_KEY = 'petak.theme-preference';
-const SPEECH_VOICE_STORAGE_KEY = 'petak.speech-voice';
 const COMPANION_VOICE_POSITION_STORAGE_KEY = 'petak.companion-voice-position';
 const BROADCAST_INTRO_STORAGE_KEY = 'petak.broadcast-intro-seen';
 const GETTING_STARTED_STORAGE_KEY = 'petak.getting-started-seen';
-const IDLE_MUSIC_ASSET = require('./assets/music/idle-theme.wav');
-const LOBBY_MUSIC_ASSET = require('./assets/music/lobby-theme.wav');
+const MAIN_MUSIC_ASSET = require('./assets/music/main-theme.wav');
 const RESULTS_MUSIC_ASSET = require('./assets/music/results-theme.wav');
 const BROADCAST_SAMPLE_RATE = 24_000;
 const BROADCAST_MAX_DURATION_SECONDS = 7;
 const BROADCAST_ACK_TIMEOUT_MS = 25_000;
 const ACCOUNT_REQUEST_TIMEOUT_MS = 15_000;
+const LOCATION_FRESHNESS_MS = 15_000;
+const LOCATION_FUTURE_TIMESTAMP_TOLERANCE_MS = 5_000;
+const LOCATION_RETRY_BASE_MS = 1_000;
+const LOCATION_RETRY_MAX_MS = 30_000;
 const STARTUP_LOADER_MINIMUM_MS = 450;
 const SEEKER_SCAN_MARKER_DURATION_MS = 15_000;
 const HIDER_MOVEMENT_GUIDANCE =
@@ -383,11 +472,19 @@ type AccountResponse = {
   token?: string;
 };
 
+type ReferralProgress = {
+  invitedCount: number;
+  rewardedCount: number;
+  pendingCount: number;
+};
+
 type CompanionStats = {
   games: number;
   wins: number;
   missionsByRole: Record<'hider' | 'seeker' | 'impostor', number>;
 };
+
+type AccountGameStats = Pick<CompanionStats, 'games' | 'wins'>;
 
 function isCompanionStats(value: unknown): value is CompanionStats {
   if (!value || typeof value !== 'object') return false;
@@ -692,6 +789,11 @@ function AppContent() {
   const [isAccountLoading, setIsAccountLoading] = useState(true);
   const isStartupLoading = isAccountLoading || isThemePreferenceLoading;
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [referrerAccountId] = useState(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return '';
+    const referrerId = new URLSearchParams(window.location.search).get('ref')?.trim() ?? '';
+    return /^[a-zA-Z0-9-]{1,64}$/.test(referrerId) ? referrerId : '';
+  });
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState('');
@@ -707,6 +809,8 @@ function AppContent() {
   const [companionStats, setCompanionStats] = useState<CompanionStats | null>(null);
   const [isLoadingCompanionStats, setIsLoadingCompanionStats] = useState(false);
   const [companionStatsError, setCompanionStatsError] = useState('');
+  const [accountGameStats, setAccountGameStats] = useState<AccountGameStats | null>(null);
+  const [accountGameStatsError, setAccountGameStatsError] = useState('');
   const [companionChatReply, setCompanionChatReply] = useState('');
   const [companionChatError, setCompanionChatError] = useState('');
   const [isCompanionVoiceListening, setIsCompanionVoiceListening] = useState(false);
@@ -736,17 +840,24 @@ function AppContent() {
   const companionVoiceSoundBars = useRef(
     Array.from({ length: 5 }, () => new Animated.Value(0.2))
   ).current;
-  const companionSpeechRecognitionRef = useRef<CompanionSpeechRecognition | null>(null);
+  const companionSpeechRecognitionActiveRef = useRef(false);
+  const companionSpeechRecognitionModuleRef =
+    useRef<CompanionSpeechRecognitionModule | null>(null);
+  const companionSpeechRecognitionModulePromiseRef =
+    useRef<Promise<CompanionSpeechRecognitionModule | null> | null>(null);
+  const companionSpeechRecognitionSubscriptionsRef =
+    useRef<Array<{ remove: () => void }>>([]);
+  const companionVoicePermissionGrantedRef = useRef(false);
   const companionVoiceEnabledRef = useRef(false);
   const companionVoiceTtsPausedRef = useRef(false);
   const companionVoicePageVisibleRef = useRef(true);
   const companionVoiceDraftRef = useRef('');
   const companionVoiceQueueRef = useRef<string[]>([]);
   const companionVoiceQueueProcessingRef = useRef(false);
-  const companionVoiceDebounceTimerRef = useRef<number | null>(null);
-  const companionVoiceRestartTimerRef = useRef<number | null>(null);
+  const companionVoiceDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const companionVoiceRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const companionVoiceRestartDelayRef = useRef(350);
-  const startCompanionVoiceRecognitionRef = useRef<() => void>(() => {});
+  const startCompanionVoiceRecognitionRef = useRef<() => void | Promise<void>>(() => {});
   const enqueueCompanionVoiceMessageRef = useRef<(message: string) => boolean>(() => false);
   const processCompanionVoiceQueueRef = useRef<() => void>(() => {});
   const isCompanionVoiceProcessing = Boolean(
@@ -836,12 +947,6 @@ function AppContent() {
       saveCompanionVoicePosition,
     ]
   );
-  const [availableSpeechVoices, setAvailableSpeechVoices] = useState<DeviceSpeechVoice[]>([]);
-  const [selectedSpeechVoiceId, setSelectedSpeechVoiceId] = useState<string | null>(null);
-  const [isSpeechVoiceLoading, setIsSpeechVoiceLoading] = useState(false);
-  const [isSpeechVoiceSaving, setIsSpeechVoiceSaving] = useState(false);
-  const [isSpeechVoicePreviewing, setIsSpeechVoicePreviewing] = useState(false);
-  const [speechVoiceError, setSpeechVoiceError] = useState('');
   const [leaderboardPeriod, setLeaderboardPeriod] = useState<LeaderboardPeriod>('daily');
   const [leaderboardEntries, setLeaderboardEntries] = useState<LeaderboardEntry[]>([]);
   const [leaderboardMinimumGames, setLeaderboardMinimumGames] = useState(5);
@@ -850,6 +955,13 @@ function AppContent() {
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isCharacterSettingsOpen, setIsCharacterSettingsOpen] = useState(false);
+  const [isThemeSettingsOpen, setIsThemeSettingsOpen] = useState(false);
+  const [isInviteFriendsOpen, setIsInviteFriendsOpen] = useState(false);
+  const [referralProgress, setReferralProgress] = useState<ReferralProgress | null>(null);
+  const [isReferralProgressLoading, setIsReferralProgressLoading] = useState(false);
+  const [referralProgressError, setReferralProgressError] = useState('');
+  const [referralProgressRefreshKey, setReferralProgressRefreshKey] = useState(0);
+  const [referralShareNotice, setReferralShareNotice] = useState('');
   const [profileCharacterPicker, setProfileCharacterPicker] = useState<'avatar' | 'companion' | null>(null);
   const [isGameTimelineOpen, setIsGameTimelineOpen] = useState(false);
   const [isLobbyDetailsOpen, setIsLobbyDetailsOpen] = useState(false);
@@ -859,6 +971,7 @@ function AppContent() {
   const [resultPlayerSearch, setResultPlayerSearch] = useState('');
   const [roleRevealDismissedRoundId, setRoleRevealDismissedRoundId] = useState<string | null>(null);
   const [isGettingStartedVisible, setIsGettingStartedVisible] = useState(false);
+  const [isGuideLabelVisible, setIsGuideLabelVisible] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<
     'connecting' | 'connected' | 'reconnecting' | 'disconnected'
   >('connecting');
@@ -982,19 +1095,32 @@ function AppContent() {
     </View>
   );
   useEffect(() => {
-    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
-    const handleVisibilityChange = () => {
-      const isVisible = document.visibilityState === 'visible';
+    const handleVisibilityChange = (isVisible: boolean) => {
       companionVoicePageVisibleRef.current = isVisible;
       if (!isVisible) {
-        companionSpeechRecognitionRef.current?.stop();
+        if (companionSpeechRecognitionActiveRef.current) {
+          companionSpeechRecognitionModuleRef.current?.stop();
+        }
       } else if (companionVoiceEnabledRef.current && !companionVoiceTtsPausedRef.current) {
-        startCompanionVoiceRecognitionRef.current();
+        void startCompanionVoiceRecognitionRef.current();
       }
     };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    handleVisibilityChange();
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      const onVisibilityChange = () => {
+        handleVisibilityChange(document.visibilityState === 'visible');
+      };
+      document.addEventListener('visibilitychange', onVisibilityChange);
+      onVisibilityChange();
+      return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
+
+    if (Platform.OS !== 'web') {
+      companionVoicePageVisibleRef.current = AppState.currentState === 'active';
+      const subscription = AppState.addEventListener('change', (state) => {
+        handleVisibilityChange(state === 'active');
+      });
+      return () => subscription.remove();
+    }
   }, []);
   useEffect(() => {
     if (account) return;
@@ -1003,16 +1129,19 @@ function AppContent() {
     setIsCompanionVoiceEnabled(false);
     setIsCompanionVoicePanelOpen(false);
     setIsCompanionVoiceSpeaking(false);
-    companionSpeechRecognitionRef.current?.stop();
+    if (companionSpeechRecognitionActiveRef.current) {
+      companionSpeechRecognitionActiveRef.current = false;
+      companionSpeechRecognitionModuleRef.current?.abort();
+    }
     void Speech.stop().catch((error: unknown) => {
       console.error('Gagal menghentikan suara Companion setelah sesi berakhir', error);
     });
-    if (companionVoiceDebounceTimerRef.current !== null && typeof window !== 'undefined') {
-      window.clearTimeout(companionVoiceDebounceTimerRef.current);
+    if (companionVoiceDebounceTimerRef.current !== null) {
+      clearTimeout(companionVoiceDebounceTimerRef.current);
       companionVoiceDebounceTimerRef.current = null;
     }
-    if (companionVoiceRestartTimerRef.current !== null && typeof window !== 'undefined') {
-      window.clearTimeout(companionVoiceRestartTimerRef.current);
+    if (companionVoiceRestartTimerRef.current !== null) {
+      clearTimeout(companionVoiceRestartTimerRef.current);
       companionVoiceRestartTimerRef.current = null;
     }
     companionVoiceDraftRef.current = '';
@@ -1075,14 +1204,15 @@ function AppContent() {
   ]);
   useEffect(() => () => {
     companionVoiceEnabledRef.current = false;
-    companionSpeechRecognitionRef.current?.stop();
-    if (typeof window !== 'undefined') {
-      if (companionVoiceDebounceTimerRef.current !== null) {
-        window.clearTimeout(companionVoiceDebounceTimerRef.current);
-      }
-      if (companionVoiceRestartTimerRef.current !== null) {
-        window.clearTimeout(companionVoiceRestartTimerRef.current);
-      }
+    if (companionSpeechRecognitionActiveRef.current) {
+      companionSpeechRecognitionActiveRef.current = false;
+      companionSpeechRecognitionModuleRef.current?.abort();
+    }
+    if (companionVoiceDebounceTimerRef.current !== null) {
+      clearTimeout(companionVoiceDebounceTimerRef.current);
+    }
+    if (companionVoiceRestartTimerRef.current !== null) {
+      clearTimeout(companionVoiceRestartTimerRef.current);
     }
     void Speech.stop().catch((error: unknown) => {
       console.error('Gagal membersihkan suara Companion', error);
@@ -1231,10 +1361,10 @@ function AppContent() {
   } | null>(null);
   const previousScreenKeyRef = useRef<string | null>(null);
   const previousLocationStatusRef = useRef<LocationStatus>(null);
+  const latestLocationFixTimestampRef = useRef(0);
   const previousThreatLevelRef = useRef<ProximityThreatLevel | null>(null);
   const lastHiderApproachWarningAtRef = useRef<number | null>(null);
   const soundEnabledRef = useRef(soundEnabled);
-  const speechVoiceIdentifierRef = useRef<string | null>(selectedSpeechVoiceId);
   const englishSpeechVoiceRef = useRef<DeviceSpeechVoice | null>(null);
   const speechQueueRef = useRef<Promise<void>>(Promise.resolve());
   const featureLauncherIdle = useRef(new Animated.Value(0)).current;
@@ -1286,8 +1416,7 @@ function AppContent() {
   const authCharacterFloat = useRef(new Animated.Value(0)).current;
   const authCharacterBlink = useRef(new Animated.Value(0)).current;
   const webPageMusicRef = useRef<WebPageMusicLoop | null>(null);
-  const idleMusicPlayer = useAudioPlayer(IDLE_MUSIC_ASSET);
-  const lobbyMusicPlayer = useAudioPlayer(LOBBY_MUSIC_ASSET);
+  const mainMusicPlayer = useAudioPlayer(MAIN_MUSIC_ASSET);
   const resultsMusicPlayer = useAudioPlayer(RESULTS_MUSIC_ASSET);
   const transitionPlayer = useAudioPlayer(require('./assets/sounds/transition.wav'));
   const countdownPlayer = useAudioPlayer(require('./assets/sounds/countdown.wav'));
@@ -1317,9 +1446,12 @@ function AppContent() {
   useEffect(() => {
     if (isAuthScreen && !authScreenWasVisibleRef.current) {
       setHomeHeroCompanionId((current) => getRandomHomeHeroCompanion(current));
+      setIsHomeHeroVisible(true);
+      homeHeroOpacity.stopAnimation();
+      homeHeroOpacity.setValue(1);
     }
     authScreenWasVisibleRef.current = isAuthScreen;
-  }, [isAuthScreen]);
+  }, [homeHeroOpacity, isAuthScreen]);
 
   useEffect(() => {
     if (!isAuthScreen || !isHomeHeroVisible) {
@@ -1456,10 +1588,15 @@ function AppContent() {
     if (!room) return [];
     const points: MapPoint[] = [];
     if (room.selfLocation && !activePlayer?.isSpectator) {
+      const locationIsStale =
+        connectionStatus !== 'connected' ||
+        !activePlayer?.locationStatus ||
+        Boolean(locationError);
+      const locationLabel = activePlayer?.role === 'SEEKER' ? 'Seeker' : 'Anda';
       points.push({
         id: 'self',
-        label: activePlayer?.role === 'SEEKER' ? 'Posisi seeker' : 'Posisi Anda',
-        color: '#0f766e',
+        label: locationIsStale ? `Lokasi terakhir · ${locationLabel}` : `Posisi ${locationLabel}`,
+        color: locationIsStale ? '#64748b' : '#0f766e',
         ...room.selfLocation,
       });
     }
@@ -1547,7 +1684,14 @@ function AppContent() {
       });
     }
     return points;
-  }, [activePlayer?.role, room, seekerScanMarker]);
+  }, [
+    activePlayer?.locationStatus,
+    activePlayer?.role,
+    connectionStatus,
+    locationError,
+    room,
+    seekerScanMarker,
+  ]);
   const mapPaths = useMemo<MapPath[]>(() => {
     if (activePlayer?.isSpectator !== true || room?.phase !== 'PLAYING') return [];
     return room.players.flatMap((player, index) =>
@@ -1590,6 +1734,55 @@ function AppContent() {
             : account
               ? 'HOME'
               : 'AUTH';
+  const mainBackdropPage: BackdropPage =
+    screenKey === 'GAME'
+      ? activePlayer?.role === 'HIDER'
+        ? 'HIDER'
+        : activePlayer?.role === 'IMPOSTOR'
+          ? 'IMPOSTOR'
+          : 'GAME'
+      : screenKey;
+  const screenBackgroundColor = isHiderThreatMode
+    ? (isLightTheme ? '#f8fafc' : hiderThreatTheme.background)
+    : pageBackdropPalettes[mainBackdropPage][isLightTheme ? 'light' : 'dark'][0];
+  const renderPageBackdrop = (page: BackdropPage) => {
+    const palette = pageBackdropPalettes[page];
+    const accent = isLightTheme ? palette.lightAccent : palette.darkAccent;
+    return (
+      <>
+        <LinearGradient
+          pointerEvents="none"
+          colors={isLightTheme ? palette.light : palette.dark}
+          locations={[0, 0.34, 0.7, 1]}
+          start={{ x: 0.86, y: 0 }}
+          end={{ x: 0.14, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+          <View
+            style={[
+              styles.pageBackdropRing,
+              styles.pageBackdropRingLarge,
+              { borderColor: accent, opacity: isLightTheme ? 0.13 : 0.11 },
+            ]}
+          />
+          <View
+            style={[
+              styles.pageBackdropRing,
+              styles.pageBackdropRingSmall,
+              { borderColor: accent, opacity: isLightTheme ? 0.11 : 0.09 },
+            ]}
+          />
+          <View
+            style={[
+              styles.pageBackdropDiamond,
+              { borderColor: accent, opacity: isLightTheme ? 0.12 : 0.1 },
+            ]}
+          />
+        </View>
+      </>
+    );
+  };
 
   useEffect(() => {
     soundEnabledRef.current = soundEnabled;
@@ -1629,68 +1822,23 @@ function AppContent() {
 
   useEffect(() => {
     let isCancelled = false;
-    const accountId = account?.id;
-    const storageKey = accountId ? `${SPEECH_VOICE_STORAGE_KEY}:${accountId}` : null;
-    speechVoiceIdentifierRef.current = null;
     englishSpeechVoiceRef.current = null;
-    setSelectedSpeechVoiceId(null);
-    setAvailableSpeechVoices([]);
-    setSpeechVoiceError('');
-
-    if (!accountId || !storageKey) {
-      setIsSpeechVoiceLoading(false);
-      return () => {
-        isCancelled = true;
-      };
-    }
-
-    const loadSpeechVoicePreference = async () => {
-      setIsSpeechVoiceLoading(true);
+    const loadEnglishSpeechVoice = async () => {
       try {
         const voices = await Speech.getAvailableVoicesAsync();
         if (isCancelled) return;
         englishSpeechVoiceRef.current = findEnglishSpeechVoice(voices);
-        const indonesianVoices = voices
-          .filter((voice) => /^id(?:[-_]|$)/i.test(voice.language))
-          .sort((first, second) => first.name.localeCompare(second.name));
-        setAvailableSpeechVoices(indonesianVoices);
-
-        try {
-          const savedVoiceId = await AsyncStorage.getItem(storageKey);
-          if (isCancelled) return;
-          if (savedVoiceId && indonesianVoices.some((voice) => voice.identifier === savedVoiceId)) {
-            setSelectedSpeechVoiceId(savedVoiceId);
-          } else {
-            setSelectedSpeechVoiceId(null);
-            if (savedVoiceId) {
-              setSpeechVoiceError(
-                'Suara tersimpan tidak tersedia di perangkat ini. Suara sistem akan digunakan.'
-              );
-            }
-          }
-        } catch (error) {
-          if (isCancelled) return;
-          console.error('Gagal membaca preferensi suara PETAK', error);
-          setSpeechVoiceError('Preferensi suara tidak dapat dibaca. Suara sistem akan digunakan.');
-        }
       } catch (error) {
         if (isCancelled) return;
-        console.error('Gagal memuat daftar suara TTS PETAK', error);
-        setSpeechVoiceError('Daftar suara perangkat tidak dapat dimuat. Suara sistem akan digunakan.');
-      } finally {
-        if (!isCancelled) setIsSpeechVoiceLoading(false);
+        console.error('Gagal memuat suara bahasa Inggris TTS PETAK', error);
       }
     };
 
-    void loadSpeechVoicePreference();
+    void loadEnglishSpeechVoice();
     return () => {
       isCancelled = true;
     };
   }, [account?.id]);
-
-  useEffect(() => {
-    speechVoiceIdentifierRef.current = selectedSpeechVoiceId;
-  }, [selectedSpeechVoiceId]);
 
   useEffect(() => {
     if (!account || isLiveMapScreen || isScannerOpen) {
@@ -1711,10 +1859,85 @@ function AppContent() {
       setIsLeaderboardOpen(false);
       setIsProfileOpen(false);
       setIsCharacterSettingsOpen(false);
+      setIsThemeSettingsOpen(false);
+      setIsInviteFriendsOpen(false);
+      setReferralProgress(null);
+      setReferralShareNotice('');
       setProfileCharacterPicker(null);
       setIsFeatureLauncherOpen(false);
     }
   }, [account]);
+
+  useEffect(() => {
+    if (!account || !isInviteFriendsOpen) return;
+    let isCancelled = false;
+    setIsReferralProgressLoading(true);
+    setReferralProgressError('');
+
+    void (async () => {
+      try {
+        const response = await fetchWithTimeout(`${SOCKET_URL}/api/auth/referrals`, {
+          headers: { Authorization: `Bearer ${account.token}` },
+        });
+        if (!response.headers.get('content-type')?.toLowerCase().includes('application/json')) {
+          throw new Error(
+            response.status === 404
+              ? 'Progres undangan belum tersedia di server ini. Link tetap bisa dibagikan; coba lagi nanti.'
+              : 'Server tidak mengirim data progres undangan yang valid. Coba lagi nanti.'
+          );
+        }
+        const result = await response.json() as {
+          error?: unknown;
+          invitedCount?: unknown;
+          pendingCount?: unknown;
+          rewardedCount?: unknown;
+        };
+        if (
+          !response.ok ||
+          typeof result.invitedCount !== 'number' ||
+          !Number.isSafeInteger(result.invitedCount) ||
+          result.invitedCount < 0 ||
+          typeof result.rewardedCount !== 'number' ||
+          !Number.isSafeInteger(result.rewardedCount) ||
+          result.rewardedCount < 0 ||
+          typeof result.pendingCount !== 'number' ||
+          !Number.isSafeInteger(result.pendingCount) ||
+          result.pendingCount < 0
+        ) {
+          throw new Error(
+            typeof result.error === 'string'
+              ? result.error
+              : 'Progres undangan belum dapat dimuat. Coba lagi nanti.'
+          );
+        }
+        if (!isCancelled) {
+          setReferralProgress({
+            invitedCount: result.invitedCount,
+            rewardedCount: result.rewardedCount,
+            pendingCount: result.pendingCount,
+          });
+        }
+      } catch (error) {
+        if (isCancelled) return;
+        console.error('Gagal memuat progres undangan PETAK', error);
+        setReferralProgressError(
+          error instanceof Error && error.name === 'AbortError'
+            ? 'Layanan undangan terlalu lama merespons. Coba lagi.'
+            : error instanceof TypeError
+              ? 'Tidak dapat terhubung ke layanan undangan. Periksa koneksi lalu coba lagi.'
+              : error instanceof Error
+                ? error.message
+                : 'Progres undangan belum dapat dimuat. Coba lagi nanti.'
+        );
+      } finally {
+        if (!isCancelled) setIsReferralProgressLoading(false);
+      }
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [account?.token, isInviteFriendsOpen, referralProgressRefreshKey, room?.phase, room?.roundId]);
 
   useEffect(() => {
     if (!isStartupLoading) return;
@@ -1893,6 +2116,64 @@ function AppContent() {
   }, [account?.companionStatsEnabled, account?.token, isProfileOpen]);
 
   useEffect(() => {
+    if (!account) {
+      setAccountGameStats(null);
+      setAccountGameStatsError('');
+      return;
+    }
+    if (room && room.phase !== 'FINISHED') return;
+
+    let isCancelled = false;
+    setAccountGameStatsError('');
+
+    void fetchWithTimeout(`${SOCKET_URL}/api/auth/game-stats`, {
+      headers: { Authorization: `Bearer ${account.token}` },
+    })
+      .then(async (response) => {
+        if (!response.headers.get('content-type')?.includes('application/json')) {
+          throw new Error(`Statistik permainan belum tersedia (HTTP ${response.status}).`);
+        }
+        const result = await response.json() as {
+          error?: unknown;
+          games?: unknown;
+          wins?: unknown;
+        };
+        if (!response.ok) {
+          throw new Error(
+            typeof result.error === 'string'
+              ? result.error
+              : 'Statistik permainan belum dapat dimuat.'
+          );
+        }
+        if (
+          typeof result.games !== 'number' ||
+          !Number.isSafeInteger(result.games) ||
+          result.games < 0 ||
+          typeof result.wins !== 'number' ||
+          !Number.isSafeInteger(result.wins) ||
+          result.wins < 0
+        ) {
+          throw new Error('Data statistik permainan tidak valid.');
+        }
+        if (!isCancelled) {
+          setAccountGameStats({ games: result.games, wins: result.wins });
+        }
+      })
+      .catch((error: unknown) => {
+        console.error('Gagal memuat statistik permainan akun', error);
+        if (!isCancelled) {
+          setAccountGameStatsError(
+            error instanceof Error ? error.message : 'Statistik permainan belum dapat dimuat.'
+          );
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [account?.id, account?.token, room?.phase]);
+
+  useEffect(() => {
     setNearbyRooms([]);
     setNearbyRoomsError('');
     setHasSearchedNearbyRooms(false);
@@ -1962,14 +2243,19 @@ function AppContent() {
     countdownPlayer.volume = 0.3;
     warningPlayer.volume = 0.35;
     attentionPlayer.volume = 0.35;
-    idleMusicPlayer.loop = true;
-    idleMusicPlayer.volume = 0.14;
-    lobbyMusicPlayer.loop = true;
-    lobbyMusicPlayer.volume = 0.18;
+    mainMusicPlayer.loop = true;
+    mainMusicPlayer.volume = 0.3;
     resultsMusicPlayer.loop = true;
-    resultsMusicPlayer.volume = 0.16;
+    resultsMusicPlayer.volume = 0.3;
     transitionPlayer.volume = 0.3;
-  }, [attentionPlayer, countdownPlayer, idleMusicPlayer, lobbyMusicPlayer, resultsMusicPlayer, transitionPlayer, warningPlayer]);
+  }, [
+    attentionPlayer,
+    countdownPlayer,
+    mainMusicPlayer,
+    resultsMusicPlayer,
+    transitionPlayer,
+    warningPlayer,
+  ]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined' || !window.AudioContext) return;
@@ -1984,7 +2270,7 @@ function AppContent() {
     }
 
     const gain = context.createGain();
-    gain.gain.value = 0.18;
+    gain.gain.value = 0.3;
     gain.connect(context.destination);
 
     const loop: WebPageMusicLoop = {
@@ -2040,7 +2326,7 @@ function AppContent() {
           loop.start();
         })
         .catch((error: unknown) => {
-          console.error('Gagal mengaktifkan audio Lobby', error);
+          console.error('Gagal mengaktifkan musik latar PETAK', error);
         });
     };
     window.addEventListener('pointerdown', unlockAudio);
@@ -2063,11 +2349,6 @@ function AppContent() {
         console.warn('Autoplay musik menunggu interaksi pertama.', error);
       });
 
-    void loop.load(LOBBY_MUSIC_ASSET, 'Lobby').catch((error: unknown) => {
-      if (disposed) return;
-      console.error('Gagal memuat musik latar PETAK', error);
-    });
-
     return () => {
       disposed = true;
       window.removeEventListener('pointerdown', unlockAudio);
@@ -2077,10 +2358,10 @@ function AppContent() {
       gain.disconnect();
       if (webPageMusicRef.current === loop) webPageMusicRef.current = null;
       void context.close().catch((error: unknown) => {
-        console.error('Gagal menutup audio context Lobby', error);
+        console.error('Gagal menutup audio context PETAK', error);
       });
     };
-  }, [lobbyMusicPlayer]);
+  }, [mainMusicPlayer]);
 
   useEffect(() => {
     const pageTheme: 'idle' | 'lobby' | 'results' | 'gameplay' =
@@ -2092,42 +2373,35 @@ function AppContent() {
             ? 'results'
             : 'gameplay';
     const shouldPlay = soundEnabled && pageTheme !== 'gameplay';
+    const musicAsset = pageTheme === 'results' ? RESULTS_MUSIC_ASSET : MAIN_MUSIC_ASSET;
+    const musicAssetName = pageTheme === 'results' ? 'Results' : 'Main';
+    const musicPlayer = pageTheme === 'results' ? resultsMusicPlayer : mainMusicPlayer;
 
-    idleMusicPlayer.pause();
-    lobbyMusicPlayer.pause();
+    mainMusicPlayer.pause();
     resultsMusicPlayer.pause();
 
     const webLoop = Platform.OS === 'web' ? webPageMusicRef.current : null;
     if (webLoop) {
       webLoop.active = shouldPlay;
-      webLoop.gain.gain.value = shouldPlay ? 0.16 : 0;
+      webLoop.gain.gain.value = shouldPlay ? 0.3 : 0;
       if (!shouldPlay) {
         webLoop.stop();
         return;
       }
-      const asset = pageTheme === 'lobby'
-        ? LOBBY_MUSIC_ASSET
-        : pageTheme === 'results'
-          ? RESULTS_MUSIC_ASSET
-          : IDLE_MUSIC_ASSET;
-      const assetName = pageTheme === 'lobby' ? 'Lobby' : pageTheme === 'results' ? 'Results' : 'Idle';
-      void webLoop.load(asset, assetName).catch((error: unknown) => {
-        console.error(`Gagal memuat musik ${assetName}`, error);
+      void webLoop.load(musicAsset, musicAssetName).catch((error: unknown) => {
+        console.error('Gagal memuat musik latar PETAK', error);
       });
       return;
     }
 
     if (!shouldPlay) return;
-    if (pageTheme === 'lobby') lobbyMusicPlayer.play();
-    else if (pageTheme === 'results') resultsMusicPlayer.play();
-    else idleMusicPlayer.play();
+    musicPlayer.play();
 
     return () => {
-      idleMusicPlayer.pause();
-      lobbyMusicPlayer.pause();
+      mainMusicPlayer.pause();
       resultsMusicPlayer.pause();
     };
-  }, [idleMusicPlayer, lobbyMusicPlayer, resultsMusicPlayer, room?.phase, soundEnabled]);
+  }, [mainMusicPlayer, resultsMusicPlayer, room?.phase, soundEnabled]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
@@ -2173,7 +2447,7 @@ function AppContent() {
       void enqueueSpeechTask(speechQueueRef, () =>
         speakCompanionSpeech(
           message,
-          speechVoiceIdentifierRef.current,
+          null,
           englishSpeechVoiceRef.current
         )
       ).then(playAlertTone).catch((error: unknown) => {
@@ -2194,46 +2468,6 @@ function AppContent() {
     lastHiderApproachWarningAtRef.current = now;
     announceGameAlert(UNKNOWN_APPROACH_WARNING);
   }, [activePlayer?.role, announceGameAlert]);
-
-  const selectSpeechVoice = async (voiceId: string | null) => {
-    if (!account || isSpeechVoiceSaving) return;
-    const previousVoiceId = selectedSpeechVoiceId;
-    const storageKey = `${SPEECH_VOICE_STORAGE_KEY}:${account.id}`;
-    setSelectedSpeechVoiceId(voiceId);
-    setSpeechVoiceError('');
-    setIsSpeechVoiceSaving(true);
-    try {
-      if (voiceId) await AsyncStorage.setItem(storageKey, voiceId);
-      else await AsyncStorage.removeItem(storageKey);
-    } catch (error) {
-      console.error('Gagal menyimpan preferensi suara PETAK', error);
-      setSelectedSpeechVoiceId(previousVoiceId);
-      setSpeechVoiceError('Preferensi suara gagal disimpan. Coba pilih kembali.');
-    } finally {
-      setIsSpeechVoiceSaving(false);
-    }
-  };
-
-  const previewSpeechVoice = async () => {
-    if (isSpeechVoicePreviewing || isSpeechVoiceLoading) return;
-    setSpeechVoiceError('');
-    setIsSpeechVoicePreviewing(true);
-    try {
-      await Speech.stop();
-      await enqueueSpeechTask(speechQueueRef, () =>
-        speakCompanionSpeech(
-          'Ini contoh suara peringatan PETAK.',
-          selectedSpeechVoiceId,
-          englishSpeechVoiceRef.current
-        )
-      );
-      setIsSpeechVoicePreviewing(false);
-    } catch (error) {
-      console.error('Gagal memulai pratinjau suara PETAK', error);
-      setSpeechVoiceError('Pratinjau suara gagal diputar pada perangkat ini.');
-      setIsSpeechVoicePreviewing(false);
-    }
-  };
 
   useEffect(() => {
       if (!room) {
@@ -2636,9 +2870,27 @@ function AppContent() {
       }
     });
 
-    socket.on('location-update:rejected', ({ message }: { message: string }) => {
-      setLocationError(message);
-    });
+    socket.on(
+      'location-update:rejected',
+      ({
+        code,
+        fixTimestamp,
+        message,
+      }: {
+        code?: string;
+        fixTimestamp?: number;
+        message: string;
+      }) => {
+        if (code === 'STALE_FIX' || code === 'OUT_OF_ORDER_FIX') return;
+        if (
+          typeof fixTimestamp === 'number' &&
+          fixTimestamp < latestLocationFixTimestampRef.current
+        ) {
+          return;
+        }
+        setLocationError(message);
+      }
+    );
 
     void AsyncStorage.getItem(SESSION_STORAGE_KEY)
       .then((storedSession) => {
@@ -2711,27 +2963,75 @@ function AppContent() {
 
     let isCancelled = false;
     let locationSubscription: LocationSubscription | null = null;
-    const sendLocation = (position: LocationFix) => {
-      if (!socketRef.current?.connected) return;
-      const now = Date.now();
-      if (!Number.isFinite(position.timestamp) || now - position.timestamp > 15_000) {
-        setLocationError('Fix GPS sudah kedaluwarsa. Menunggu pembaruan lokasi baru.');
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+    let retryAttempt = 0;
+    let isStarting = false;
+    function retryLocationUpdates() {
+      retryTimeout = null;
+      if (isCancelled) return;
+      if (isStarting) {
+        retryTimeout = setTimeout(retryLocationUpdates, LOCATION_RETRY_BASE_MS);
         return;
       }
-      if (position.timestamp > now + 5_000) {
+      void startLocationUpdates();
+    }
+    function scheduleLocationRetry(preserveError = false) {
+      if (isCancelled || retryTimeout) return;
+      if (!preserveError) setLocationError('');
+      const retryDelay = Math.min(
+        LOCATION_RETRY_BASE_MS * 2 ** retryAttempt,
+        LOCATION_RETRY_MAX_MS
+      );
+      retryAttempt = Math.min(retryAttempt + 1, 5);
+      retryTimeout = setTimeout(retryLocationUpdates, retryDelay);
+      const currentSubscription = locationSubscription;
+      locationSubscription = null;
+      currentSubscription?.remove();
+    }
+    const sendLocation = (position: LocationFix) => {
+      const socket = socketRef.current;
+      if (!socket?.connected) return;
+      const now = Date.now();
+      if (
+        !Number.isFinite(position.latitude) ||
+        position.latitude < -90 ||
+        position.latitude > 90 ||
+        !Number.isFinite(position.longitude) ||
+        position.longitude < -180 ||
+        position.longitude > 180 ||
+        !Number.isFinite(position.accuracy) ||
+        position.accuracy < 0
+      ) {
+        setLocationError('Fix GPS belum valid. Menunggu pembaruan lokasi berikutnya.');
+        return;
+      }
+      if (!Number.isFinite(position.timestamp) || position.timestamp <= 0) {
+        setLocationError('Waktu pengambilan fix GPS tidak valid. Menunggu pembaruan lokasi berikutnya.');
+        return;
+      }
+      if (position.timestamp <= latestLocationFixTimestampRef.current) {
+        return;
+      }
+      if (now - position.timestamp > LOCATION_FRESHNESS_MS) {
+        return;
+      }
+      if (position.timestamp > now + LOCATION_FUTURE_TIMESTAMP_TOLERANCE_MS) {
         setLocationError('Waktu GPS perangkat tidak sesuai. Periksa tanggal dan waktu perangkat.');
         return;
       }
+      latestLocationFixTimestampRef.current = position.timestamp;
+      retryAttempt = 0;
       setLocationError('');
-      socketRef.current.volatile.emit('location-update', {
+      socket.emit('location-update', {
         latitude: position.latitude,
         longitude: position.longitude,
         accuracy: position.accuracy,
         fixTimestamp: position.timestamp,
       });
     };
-
-    const startLocationUpdates = async () => {
+    async function startLocationUpdates() {
+      if (isCancelled || isStarting || locationSubscription) return;
+      isStarting = true;
       try {
         const permissionGranted = await deviceLocationProvider.requestPermission();
         if (isCancelled) return;
@@ -2740,23 +3040,50 @@ function AppContent() {
           return;
         }
 
-        setLocationError('');
-        const initialPosition = await deviceLocationProvider.getCurrentLocation();
+        const servicesEnabled = await deviceLocationProvider.hasLocationServicesEnabled();
         if (isCancelled) return;
-        sendLocation(initialPosition);
-        const subscription = await deviceLocationProvider.watchLocation(sendLocation);
-        if (isCancelled) subscription.remove();
-        else locationSubscription = subscription;
+        if (!servicesEnabled) {
+          setLocationError('Layanan lokasi perangkat nonaktif. Aktifkan GPS lalu coba lagi.');
+          scheduleLocationRetry(true);
+          return;
+        }
+
+        const subscription = await deviceLocationProvider.watchLocation(
+          sendLocation,
+          (message) => {
+            if (isCancelled) return;
+            console.warn('Aliran GPS terganggu; PETAK mencoba memulihkannya otomatis.', message);
+            scheduleLocationRetry();
+          }
+        );
+        if (isCancelled || retryTimeout) {
+          subscription.remove();
+          return;
+        }
+        locationSubscription = subscription;
+        setLocationError('');
+        void deviceLocationProvider.getCurrentLocation()
+          .then((position) => {
+            if (!isCancelled) sendLocation(position);
+          })
+          .catch((error: unknown) => {
+            if (!isCancelled) {
+              console.warn('Fix GPS awal belum tersedia; menunggu pembaruan dari aliran GPS.', error);
+            }
+          });
       } catch (error) {
         if (isCancelled) return;
-        console.error('Gagal mendapatkan lokasi GPS PETAK', error);
-        setLocationError('Lokasi GPS tidak tersedia. Periksa layanan lokasi perangkat dan coba lagi.');
+        console.error('Gagal memulai aliran GPS PETAK', error);
+        scheduleLocationRetry();
+      } finally {
+        isStarting = false;
       }
-    };
+    }
 
     void startLocationUpdates();
     return () => {
       isCancelled = true;
+      if (retryTimeout) clearTimeout(retryTimeout);
       locationSubscription?.remove();
     };
   }, [activePlayer?.isSpectator, connectionStatus, locationRetry, room?.code, room?.phase]);
@@ -3089,32 +3416,97 @@ function AppContent() {
   };
 
   const shareRoomInvite = async () => {
-    if (!room || Platform.OS !== 'web' || typeof window === 'undefined') return;
+    if (!room) return;
 
-    const inviteUrl = new URL(window.location.href);
-    inviteUrl.search = '';
-    inviteUrl.hash = '';
-    inviteUrl.searchParams.set('room', room.code);
+    const baseUrl = Platform.OS === 'web' && typeof window !== 'undefined'
+      ? window.location.origin
+      : 'https://petakumpet62.github.io';
+    const inviteParams = [`room=${encodeURIComponent(room.code)}`];
+    if (account) inviteParams.push(`ref=${encodeURIComponent(account.id)}`);
+    const inviteUrl = `${baseUrl}/?${inviteParams.join('&')}`;
+    const inviteText = `Buka tautan ini dan login untuk bergabung ke room ${room.code} di PETAK.`;
 
     try {
-      if (typeof navigator.share === 'function') {
-        await navigator.share({
-          title: 'Gabung ke room PETAK',
-          text: `Buka tautan ini dan login untuk bergabung ke room ${room.code} di PETAK.`,
-          url: inviteUrl.toString(),
-        });
+      if (Platform.OS === 'web' && typeof navigator !== 'undefined') {
+        if (typeof navigator.share === 'function') {
+          await navigator.share({
+            title: 'Gabung ke room PETAK',
+            text: inviteText,
+            url: inviteUrl,
+          });
+          return;
+        }
+        if (!navigator.clipboard?.writeText) {
+          throw new Error('Clipboard API tidak tersedia.');
+        }
+        await navigator.clipboard.writeText(inviteUrl);
+        showAppAlert('Link undangan berhasil disalin. Login diperlukan sebelum bergabung.');
         return;
       }
 
-      if (!navigator.clipboard?.writeText) {
-        throw new Error('Clipboard API tidak tersedia.');
-      }
-      await navigator.clipboard.writeText(inviteUrl.toString());
-      showAppAlert('Link undangan berhasil disalin. Login diperlukan sebelum bergabung.');
+      await Share.share(
+        {
+          title: 'Gabung ke room PETAK',
+          message: `${inviteText} ${inviteUrl}`,
+          url: inviteUrl,
+        },
+        { dialogTitle: 'Gabung ke room PETAK' }
+      );
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return;
       console.error('Gagal membagikan link room PETAK', error);
       showAppAlert('Link undangan tidak dapat dibagikan. Silakan salin dan bagikan kode room secara manual.');
+    }
+  };
+
+  const referralInviteUrl = account
+    ? (() => {
+        const baseUrl = Platform.OS === 'web' && typeof window !== 'undefined'
+          ? window.location.origin
+          : 'https://petakumpet62.github.io';
+        const inviteParams = [`ref=${encodeURIComponent(account.id)}`];
+        if (room?.phase === 'LOBBY') {
+          inviteParams.push(`room=${encodeURIComponent(room.code)}`);
+        }
+        const companionId = getProfileCompanion(account.companionId).id;
+        return `${baseUrl}/invite/${companionId}/?${inviteParams.join('&')}`;
+      })()
+    : '';
+
+  const shareReferralInvite = async () => {
+    if (!account || !referralInviteUrl) return;
+    const inviteText = 'Ayo main petak umpet online bareng aku di PETAK!';
+
+    try {
+      if (Platform.OS === 'web' && typeof navigator !== 'undefined') {
+        if (typeof navigator.share === 'function') {
+          await navigator.share({
+            title: 'Undang teman bermain PETAK',
+            text: inviteText,
+            url: referralInviteUrl,
+          });
+          return;
+        }
+        if (!navigator.clipboard?.writeText) {
+          throw new Error('Clipboard API tidak tersedia.');
+        }
+        await navigator.clipboard.writeText(`${inviteText} ${referralInviteUrl}`);
+        setReferralShareNotice('Link undangan berhasil disalin.');
+        return;
+      }
+
+      await Share.share(
+        {
+          title: 'Undang teman bermain PETAK',
+          message: `${inviteText} ${referralInviteUrl}`,
+          url: referralInviteUrl,
+        },
+        { dialogTitle: 'Undang teman bermain PETAK' }
+      );
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+      console.error('Gagal membagikan link referral PETAK', error);
+      setReferralShareNotice('Link belum dapat dibagikan. Silakan salin tautan undangan.');
     }
   };
 
@@ -3264,7 +3656,13 @@ function AppContent() {
       const response = await fetchWithTimeout(`${SOCKET_URL}/api/auth/${authMode}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: authUsername, password: authPassword }),
+        body: JSON.stringify({
+          username: authUsername,
+          password: authPassword,
+          ...(authMode === 'register' && referrerAccountId
+            ? { referrerId: referrerAccountId }
+            : {}),
+        }),
       });
       const result = (await response.json()) as {
         error?: string;
@@ -3452,8 +3850,8 @@ function AppContent() {
   enqueueCompanionVoiceMessageRef.current = enqueueCompanionVoiceMessage;
 
   const flushCompanionVoiceDraft = () => {
-    if (companionVoiceDebounceTimerRef.current !== null && typeof window !== 'undefined') {
-      window.clearTimeout(companionVoiceDebounceTimerRef.current);
+    if (companionVoiceDebounceTimerRef.current !== null) {
+      clearTimeout(companionVoiceDebounceTimerRef.current);
       companionVoiceDebounceTimerRef.current = null;
     }
     const message = companionVoiceDraftRef.current.trim();
@@ -3468,7 +3866,9 @@ function AppContent() {
     const shouldResumeListening = companionVoiceEnabledRef.current;
     if (shouldResumeListening) {
       companionVoiceTtsPausedRef.current = true;
-      companionSpeechRecognitionRef.current?.stop();
+      if (companionSpeechRecognitionActiveRef.current) {
+        companionSpeechRecognitionModuleRef.current?.stop();
+      }
     }
     setIsCompanionVoiceSpeaking(true);
     try {
@@ -3492,7 +3892,7 @@ function AppContent() {
         void enqueueSpeechTask(speechQueueRef, () =>
           speakCompanionSpeech(
             reply,
-            selectedSpeechVoiceId,
+            null,
             englishSpeechVoiceRef.current,
             getCompanionSpeechStyle(companionId)
           )
@@ -3508,13 +3908,17 @@ function AppContent() {
     } finally {
       setIsCompanionVoiceSpeaking(false);
       companionVoiceTtsPausedRef.current = false;
-      if (shouldResumeListening && companionVoiceEnabledRef.current && typeof window !== 'undefined') {
+      if (
+        shouldResumeListening &&
+        companionVoiceEnabledRef.current &&
+        companionVoicePageVisibleRef.current
+      ) {
         if (companionVoiceRestartTimerRef.current !== null) {
-          window.clearTimeout(companionVoiceRestartTimerRef.current);
+          clearTimeout(companionVoiceRestartTimerRef.current);
         }
-        companionVoiceRestartTimerRef.current = window.setTimeout(() => {
+        companionVoiceRestartTimerRef.current = setTimeout(() => {
           companionVoiceRestartTimerRef.current = null;
-          startCompanionVoiceRecognitionRef.current();
+          void startCompanionVoiceRecognitionRef.current();
         }, 350);
       }
     }
@@ -3632,112 +4036,210 @@ function AppContent() {
     void processCompanionVoiceQueue();
   };
 
-  const startCompanionVoiceRecognition = () => {
+  const initializeCompanionSpeechRecognition = () => {
+    if (companionSpeechRecognitionModulePromiseRef.current) {
+      return companionSpeechRecognitionModulePromiseRef.current;
+    }
+
+    const initialization = (async () => {
+      const module = Platform.OS === 'web'
+        ? (await import('expo-speech-recognition')).ExpoSpeechRecognitionModule
+        : requireOptionalNativeModule<CompanionSpeechRecognitionModule>(
+            'ExpoSpeechRecognition'
+          );
+      if (!module) return null;
+
+      companionSpeechRecognitionModuleRef.current = module;
+      companionSpeechRecognitionSubscriptionsRef.current = [
+        module.addListener('start', () => {
+          companionSpeechRecognitionActiveRef.current = true;
+          setIsCompanionVoiceListening(true);
+        }),
+        module.addListener('result', (event) => {
+          const transcript = event.results
+            .map((result) => result.transcript.trim())
+            .filter(Boolean)
+            .join(' ');
+          if (!event.isFinal) {
+            setCompanionVoiceInterimTranscript(transcript);
+            return;
+          }
+          setCompanionVoiceInterimTranscript('');
+          if (!transcript) return;
+          companionVoiceDraftRef.current = [
+            companionVoiceDraftRef.current,
+            transcript,
+          ].filter(Boolean).join(' ').slice(0, 600);
+          companionVoiceRestartDelayRef.current = 350;
+          setCompanionVoiceDraft(companionVoiceDraftRef.current);
+          if (companionVoiceDebounceTimerRef.current !== null) {
+            clearTimeout(companionVoiceDebounceTimerRef.current);
+          }
+          companionVoiceDebounceTimerRef.current = setTimeout(
+            flushCompanionVoiceDraft,
+            1_500
+          );
+        }),
+        module.addListener('error', (event) => {
+          setCompanionVoiceInterimTranscript('');
+          if (
+            event.error === 'no-speech' ||
+            (event.error === 'aborted' && !companionVoiceEnabledRef.current)
+          ) {
+            return;
+          }
+          const messages: Partial<Record<ExpoSpeechRecognitionErrorCode, string>> = {
+            'not-allowed': Platform.OS === 'web'
+              ? 'Izin mikrofon ditolak. Izinkan mikrofon di pengaturan browser.'
+              : 'Izin mikrofon atau pengenalan suara ditolak. Izinkan akses di pengaturan perangkat.',
+            'service-not-allowed': 'Layanan pengenalan suara tidak tersedia atau tidak diizinkan.',
+            'audio-capture': 'Mikrofon tidak ditemukan atau sedang digunakan aplikasi lain.',
+            network: 'Layanan transkripsi terganggu. PETAK akan mencoba kembali otomatis.',
+            'language-not-supported': 'Pengenalan bahasa Indonesia tidak didukung perangkat ini.',
+            interrupted: 'Input suara terputus. PETAK akan mencoba kembali.',
+            busy: 'Pengenalan suara sedang digunakan aplikasi lain.',
+          };
+          console.error('Pengenalan suara Companion gagal', event.error, event.message);
+          setCompanionChatError(
+            messages[event.error] ?? 'Pengenalan suara gagal. Periksa izin mikrofon.'
+          );
+          if (
+            event.error === 'network' ||
+            event.error === 'busy' ||
+            event.error === 'interrupted'
+          ) {
+            companionVoiceRestartDelayRef.current = 5_000;
+          } else if (
+            event.error === 'audio-capture' ||
+            event.error === 'language-not-supported' ||
+            event.error === 'not-allowed' ||
+            event.error === 'service-not-allowed'
+          ) {
+            companionVoiceEnabledRef.current = false;
+            setIsCompanionVoiceEnabled(false);
+            companionVoicePermissionGrantedRef.current = event.error !== 'not-allowed';
+            if (companionSpeechRecognitionActiveRef.current) {
+              companionSpeechRecognitionActiveRef.current = false;
+              module.abort();
+            }
+          }
+        }),
+        module.addListener('end', () => {
+          companionSpeechRecognitionActiveRef.current = false;
+          setIsCompanionVoiceListening(false);
+          setCompanionVoiceInterimTranscript('');
+          if (
+            companionVoiceEnabledRef.current &&
+            !companionVoiceTtsPausedRef.current &&
+            companionVoicePageVisibleRef.current
+          ) {
+            if (companionVoiceRestartTimerRef.current !== null) {
+              clearTimeout(companionVoiceRestartTimerRef.current);
+            }
+            companionVoiceRestartTimerRef.current = setTimeout(() => {
+              companionVoiceRestartTimerRef.current = null;
+              void startCompanionVoiceRecognitionRef.current();
+            }, companionVoiceRestartDelayRef.current);
+          }
+        }),
+      ];
+      return module;
+    })();
+
+    companionSpeechRecognitionModulePromiseRef.current = initialization;
+    return initialization;
+  };
+
+  useEffect(() => () => {
+    companionSpeechRecognitionSubscriptionsRef.current.forEach((subscription) =>
+      subscription.remove()
+    );
+    companionSpeechRecognitionSubscriptionsRef.current = [];
+    companionSpeechRecognitionModuleRef.current = null;
+  }, []);
+
+  const startCompanionVoiceRecognition = async () => {
     if (
-      Platform.OS !== 'web' ||
-      typeof window === 'undefined' ||
       !companionVoiceEnabledRef.current ||
       companionVoiceTtsPausedRef.current ||
       !companionVoicePageVisibleRef.current ||
-      companionSpeechRecognitionRef.current
+      companionSpeechRecognitionActiveRef.current
     ) return;
-    if (!window.isSecureContext) {
+    if (Platform.OS === 'web' && typeof window === 'undefined') return;
+    if (Platform.OS === 'web' && !window.isSecureContext) {
       companionVoiceEnabledRef.current = false;
       setIsCompanionVoiceEnabled(false);
       setCompanionChatError('Input suara memerlukan koneksi aman HTTPS atau localhost.');
       return;
     }
-    const speechWindow = window as CompanionSpeechRecognitionWindow;
-    const SpeechRecognition =
-      speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      companionVoiceEnabledRef.current = false;
-      setIsCompanionVoiceEnabled(false);
-      setCompanionChatError('Pengenalan suara belum didukung browser ini. Coba Chrome atau Edge.');
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'id-ID';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.onresult = (event) => {
-      const finalTranscripts: string[] = [];
-      const interimTranscripts: string[] = [];
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const transcript = event.results[index][0]?.transcript.trim();
-        if (!transcript) continue;
-        if (event.results[index].isFinal) finalTranscripts.push(transcript);
-        else interimTranscripts.push(transcript);
-      }
-      setCompanionVoiceInterimTranscript(interimTranscripts.join(' '));
-      if (finalTranscripts.length === 0) return;
-      companionVoiceDraftRef.current = [
-        companionVoiceDraftRef.current,
-        finalTranscripts.join(' '),
-      ].filter(Boolean).join(' ').slice(0, 600);
-      companionVoiceRestartDelayRef.current = 350;
-      setCompanionVoiceDraft(companionVoiceDraftRef.current);
-      if (companionVoiceDebounceTimerRef.current !== null) {
-        window.clearTimeout(companionVoiceDebounceTimerRef.current);
-      }
-      companionVoiceDebounceTimerRef.current = window.setTimeout(
-        flushCompanionVoiceDraft,
-        1_500
-      );
-    };
-    recognition.onerror = (event) => {
-      setCompanionVoiceInterimTranscript('');
-      if (event.error === 'no-speech') return;
-      const messages: Record<string, string> = {
-        'not-allowed': 'Izin mikrofon ditolak. Izinkan mikrofon di browser untuk memakai suara.',
-        'service-not-allowed': 'Layanan pengenalan suara browser tidak diizinkan.',
-        'audio-capture': 'Mikrofon tidak ditemukan atau sedang digunakan aplikasi lain.',
-        network: 'Layanan transkripsi browser terganggu. PETAK akan mencoba kembali otomatis.',
-        'language-not-supported': 'Pengenalan bahasa Indonesia tidak didukung browser ini.',
-      };
-      setCompanionChatError(messages[event.error] ?? 'Pengenalan suara gagal. Periksa izin mikrofon.');
-      if (event.error === 'network') {
-        companionVoiceRestartDelayRef.current = 5_000;
-      } else if (event.error === 'audio-capture' || event.error === 'language-not-supported') {
-        companionVoiceRestartDelayRef.current = 350;
-        companionVoiceEnabledRef.current = false;
-        setIsCompanionVoiceEnabled(false);
-      } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        companionVoiceEnabledRef.current = false;
-        setIsCompanionVoiceEnabled(false);
-      }
-    };
-    recognition.onend = () => {
-      setIsCompanionVoiceListening(false);
-      setCompanionVoiceInterimTranscript('');
-      if (companionSpeechRecognitionRef.current === recognition) {
-        companionSpeechRecognitionRef.current = null;
-      }
-      if (
-        companionVoiceEnabledRef.current &&
-        !companionVoiceTtsPausedRef.current &&
-        companionVoicePageVisibleRef.current
-      ) {
-        if (companionVoiceRestartTimerRef.current !== null) {
-          window.clearTimeout(companionVoiceRestartTimerRef.current);
-        }
-        companionVoiceRestartTimerRef.current = window.setTimeout(() => {
-          companionVoiceRestartTimerRef.current = null;
-          startCompanionVoiceRecognitionRef.current();
-        }, companionVoiceRestartDelayRef.current);
-      }
-    };
 
     try {
-      recognition.start();
-      companionSpeechRecognitionRef.current = recognition;
-      setIsCompanionVoiceListening(true);
+      const speechRecognitionModule = await initializeCompanionSpeechRecognition();
+      if (!companionVoiceEnabledRef.current) return;
+      if (!speechRecognitionModule) {
+        companionVoiceEnabledRef.current = false;
+        setIsCompanionVoiceEnabled(false);
+        setCompanionChatError(
+          Platform.OS === 'web'
+            ? 'Pengenalan suara belum didukung browser ini. Coba Chrome atau Edge.'
+            : 'Voice Chat AI memerlukan development build; Expo Go tidak menyertakan modul pengenalan suara.'
+        );
+        return;
+      }
+
+      if (!speechRecognitionModule.isRecognitionAvailable()) {
+        companionVoiceEnabledRef.current = false;
+        setIsCompanionVoiceEnabled(false);
+        setCompanionChatError(
+          Platform.OS === 'web'
+            ? 'Pengenalan suara belum didukung browser ini. Coba Chrome atau Edge.'
+            : 'Layanan pengenalan suara tidak tersedia di perangkat ini.'
+        );
+        return;
+      }
+
+      if (!companionVoicePermissionGrantedRef.current) {
+        const permission = await speechRecognitionModule.requestPermissionsAsync();
+        if (!companionVoiceEnabledRef.current) return;
+        if (!permission.granted) {
+          companionVoiceEnabledRef.current = false;
+          setIsCompanionVoiceEnabled(false);
+          setCompanionChatError(
+            Platform.OS === 'web'
+              ? 'Izin mikrofon ditolak. Izinkan mikrofon di pengaturan browser.'
+              : 'Izin mikrofon dan pengenalan suara diperlukan. Izinkan akses di pengaturan perangkat.'
+          );
+          return;
+        }
+        companionVoicePermissionGrantedRef.current = true;
+      }
+
+      if (
+        !companionVoiceEnabledRef.current ||
+        companionVoiceTtsPausedRef.current ||
+        !companionVoicePageVisibleRef.current
+      ) return;
+
+      companionSpeechRecognitionActiveRef.current = true;
+      speechRecognitionModule.start({
+        lang: 'id-ID',
+        continuous: true,
+        interimResults: true,
+        iosTaskHint: 'dictation',
+        androidIntentOptions: {
+          EXTRA_LANGUAGE_MODEL: 'free_form',
+        },
+      });
     } catch (error) {
+      companionSpeechRecognitionActiveRef.current = false;
       console.error('Gagal memulai input suara Companion', error);
-      setCompanionChatError('Mikrofon tidak dapat dimulai. Periksa izin browser lalu coba lagi.');
       companionVoiceEnabledRef.current = false;
       setIsCompanionVoiceEnabled(false);
+      setCompanionChatError(
+        error instanceof Error
+          ? `Mikrofon tidak dapat dimulai: ${error.message}`
+          : 'Mikrofon tidak dapat dimulai. Periksa izin perangkat lalu coba lagi.'
+      );
     }
   };
   startCompanionVoiceRecognitionRef.current = startCompanionVoiceRecognition;
@@ -3747,16 +4249,19 @@ function AppContent() {
     setIsCompanionVoiceEnabled(false);
     flushCompanionVoiceDraft();
     setCompanionVoiceInterimTranscript('');
-    companionSpeechRecognitionRef.current?.stop();
-    setIsCompanionVoiceListening(false);
-    if (companionVoiceRestartTimerRef.current !== null && typeof window !== 'undefined') {
-      window.clearTimeout(companionVoiceRestartTimerRef.current);
+    if (companionSpeechRecognitionActiveRef.current) {
+      companionSpeechRecognitionModuleRef.current?.stop();
+    } else {
+      setIsCompanionVoiceListening(false);
+    }
+    if (companionVoiceRestartTimerRef.current !== null) {
+      clearTimeout(companionVoiceRestartTimerRef.current);
       companionVoiceRestartTimerRef.current = null;
     }
   };
 
   const toggleCompanionVoice = () => {
-    if (!account || Platform.OS !== 'web') return;
+    if (!account) return;
     setIsCompanionVoicePanelOpen(true);
     setCompanionChatError('');
     if (companionVoiceEnabledRef.current) {
@@ -3766,7 +4271,7 @@ function AppContent() {
     companionVoiceEnabledRef.current = true;
     setIsCompanionVoiceEnabled(true);
     companionVoiceRestartDelayRef.current = 350;
-    startCompanionVoiceRecognitionRef.current();
+    void startCompanionVoiceRecognitionRef.current();
   };
 
   const closeCompanionVoicePanel = () => {
@@ -3775,8 +4280,19 @@ function AppContent() {
   };
 
   const openCharacterSettings = (picker: 'avatar' | 'companion' | null = null) => {
+    setIsThemeSettingsOpen(false);
+    setIsInviteFriendsOpen(false);
     setProfileCharacterPicker(picker);
     setIsCharacterSettingsOpen(true);
+  };
+
+  const openInviteFriends = () => {
+    setIsProfileOpen(true);
+    setIsCharacterSettingsOpen(false);
+    setIsThemeSettingsOpen(false);
+    setProfileCharacterPicker(null);
+    setReferralShareNotice('');
+    setIsInviteFriendsOpen(true);
   };
 
   const closeCharacterSettings = () => {
@@ -3835,7 +4351,9 @@ function AppContent() {
             ? 'Sinyal GPS kurang akurat. Tunggu lokasi yang lebih tepat.'
             : activePlayer?.locationStatus === 'UNCERTAIN'
               ? 'Posisi GPS belum cukup pasti untuk menentukan batas zona. Tunggu fix berikutnya atau menjauh dari tepi zona.'
-            : 'Menunggu lokasi GPS terbaru. Pastikan izin lokasi aktif.'
+            : room?.selfLocation
+              ? 'Sinyal GPS belum stabil. Lokasi terakhir ditampilkan; menunggu fix terbaru.'
+              : 'Menunggu lokasi GPS terbaru. Pastikan izin lokasi aktif.'
   );
   const impostorDecoyQuota = room?.impostorDecoyQuota ?? 0;
   const impostorDecoysUsed = room?.impostorDecoysUsed ?? 0;
@@ -4697,6 +5215,7 @@ function AppContent() {
       onRequestClose={() => setIsLeaderboardOpen(false)}
     >
       <SafeAreaView style={styles.leaderboardModalContainer}>
+        {renderPageBackdrop('LEADERBOARD')}
         <View style={styles.leaderboardModalHeader}>
           <View style={styles.leaderboardModalHeading}>
             <Text style={styles.leaderboardModalEyebrow}>PERFORMA PEMAIN</Text>
@@ -4824,7 +5343,7 @@ function AppContent() {
             </View>
           )}
         />
-        {Platform.OS === 'web' && account && !isCompanionVoicePanelOpen &&
+        {account && !isCompanionVoicePanelOpen &&
         isCompanionVoicePositionLoaded ? (
           <Animated.View
             {...companionVoicePanResponder.panHandlers}
@@ -4950,7 +5469,7 @@ function AppContent() {
   );
 
   const companionVoiceControl = (
-    Platform.OS === 'web' && account ? (
+    account ? (
       <View pointerEvents="box-none" style={styles.companionVoiceOverlay}>
         {isCompanionVoicePanelOpen && companionPanelPosition ? (
           <View
@@ -5028,7 +5547,7 @@ function AppContent() {
                 </Text>
               ) : null}
               <Text style={styles.companionVoicePanelHint}>
-                Ucapan dikirim setelah hening 1,5 detik. Maksimal 5 pesan menunggu; mikrofon dijeda saat Companion berbicara. Audio mungkin diproses layanan browser, sedangkan hanya transkrip yang dikirim ke PETAK.
+                Ucapan dikirim setelah hening 1,5 detik. Maksimal 5 pesan menunggu; mikrofon dijeda saat Companion berbicara. Audio diproses layanan pengenalan suara browser atau perangkat; server PETAK menerima teks transkripsi.
               </Text>
             </ScrollView>
             <View style={styles.companionVoicePanelMicControl}>
@@ -5121,6 +5640,8 @@ function AppContent() {
     </Modal>
   ) : null;
 
+  const isProfileSubpage =
+    isCharacterSettingsOpen || isThemeSettingsOpen || isInviteFriendsOpen;
   const profileModal = (
     <Modal
       visible={isProfileOpen && Boolean(account)}
@@ -5130,37 +5651,64 @@ function AppContent() {
           closeCharacterSettings();
           return;
         }
+        if (isThemeSettingsOpen) {
+          setIsThemeSettingsOpen(false);
+          return;
+        }
+        if (isInviteFriendsOpen) {
+          setIsInviteFriendsOpen(false);
+          return;
+        }
         setIsProfileOpen(false);
       }}
     >
       <SafeAreaView
         style={[
           styles.profileModalContainer,
-          isCharacterSettingsOpen && styles.profileCharacterPaletteContainer,
+          isProfileSubpage && styles.profileCharacterPaletteContainer,
         ]}
       >
+        {renderPageBackdrop(
+          isCharacterSettingsOpen
+            ? 'CHARACTER'
+            : isThemeSettingsOpen
+              ? 'THEME'
+              : 'PROFILE'
+        )}
         <View
           style={[
             styles.leaderboardModalHeader,
-            isCharacterSettingsOpen && styles.profileCharacterPaletteHeader,
+            isProfileSubpage && styles.profileCharacterPaletteHeader,
           ]}
         >
           <View style={styles.leaderboardModalHeading}>
             <Text
               style={[
                 styles.leaderboardModalEyebrow,
-                isCharacterSettingsOpen && styles.profileCharacterPaletteEyebrow,
+                isProfileSubpage && styles.profileCharacterPaletteEyebrow,
               ]}
             >
-              {isCharacterSettingsOpen ? 'PERSONALISASI' : 'AKUN PEMAIN'}
+              {isCharacterSettingsOpen
+                ? 'PERSONALISASI'
+                : isThemeSettingsOpen
+                  ? 'PREFERENSI PERANGKAT'
+                  : isInviteFriendsOpen
+                    ? 'PROGRAM AJAK TEMAN'
+                    : 'AKUN PEMAIN'}
             </Text>
             <Text
               style={[
                 styles.leaderboardModalTitle,
-                isCharacterSettingsOpen && styles.profileCharacterPaletteTitle,
+                isProfileSubpage && styles.profileCharacterPaletteTitle,
               ]}
             >
-              {isCharacterSettingsOpen ? 'Karakter' : 'Profil'}
+              {isCharacterSettingsOpen
+                ? 'Karakter'
+                : isThemeSettingsOpen
+                  ? 'Tampilan'
+                  : isInviteFriendsOpen
+                    ? 'Undang teman'
+                    : 'Profil'}
             </Text>
           </View>
           <Pressable
@@ -5168,17 +5716,19 @@ function AppContent() {
             accessibilityLabel="Tutup profil"
             style={[
               styles.leaderboardModalClose,
-              isCharacterSettingsOpen && styles.profileCharacterPaletteClose,
+              isProfileSubpage && styles.profileCharacterPaletteClose,
             ]}
             onPress={() => {
               closeCharacterSettings();
+              setIsThemeSettingsOpen(false);
+              setIsInviteFriendsOpen(false);
               setIsProfileOpen(false);
             }}
           >
             <Text
               style={[
                 styles.leaderboardModalCloseText,
-                isCharacterSettingsOpen && styles.profileCharacterPaletteCloseText,
+                isProfileSubpage && styles.profileCharacterPaletteCloseText,
               ]}
             >
               ×
@@ -5189,10 +5739,10 @@ function AppContent() {
           <ScrollView
             contentContainerStyle={[
               styles.profileContent,
-              isCharacterSettingsOpen && styles.profileCharacterPaletteContent,
+              isProfileSubpage && styles.profileCharacterPaletteContent,
             ]}
           >
-            {!isCharacterSettingsOpen ? (
+            {!isProfileSubpage ? (
               <>
                 <View style={styles.profileIdentityShowcase}>
                   <View style={styles.profileIdentityCard}>
@@ -5214,7 +5764,59 @@ function AppContent() {
                       </View>
                     </Pressable>
                     <View style={styles.profileIdentityDetails}>
-                      <Text numberOfLines={1} style={styles.profileUsername}>@{account.username}</Text>
+                      <View style={styles.profileIdentityNameRow}>
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            styles.profileUsername,
+                            selectedProfileAvatar.id !== DEFAULT_PROFILE_AVATAR_ID &&
+                              styles.profileUsernameWithAlias,
+                          ]}
+                        >
+                          @{account.username}
+                        </Text>
+                        {selectedProfileAvatar.id !== DEFAULT_PROFILE_AVATAR_ID ? (
+                          <>
+                            <Text style={styles.profileUsernameAliasSeparator}>|</Text>
+                            <Text numberOfLines={1} style={styles.profileUsernameAlias}>
+                              {selectedProfileAvatar.name.toLowerCase()}
+                            </Text>
+                          </>
+                        ) : null}
+                        <View
+                          accessibilityLabel={`${account.badges} badge`}
+                          accessible
+                          style={styles.identityBadgeCount}
+                        >
+                          <Text style={styles.identityBadgeCountIcon}>✦</Text>
+                          <Text style={styles.identityBadgeCountValue}>{account.badges}</Text>
+                        </View>
+                      </View>
+                      <View style={styles.identityGameStatsRow}>
+                        <View
+                          accessibilityLabel={`${accountGameStats?.wins ?? '—'} menang`}
+                          accessible
+                          style={styles.identityGameStat}
+                        >
+                          <Text style={styles.identityGameStatIcon}>🏆</Text>
+                          <Text style={styles.identityGameStatValue}>
+                            {accountGameStats?.wins ?? '—'} menang
+                          </Text>
+                        </View>
+                        <View
+                          accessibilityLabel={`${accountGameStats?.games ?? '—'} game dimainkan`}
+                          accessible
+                          style={styles.identityGameStat}
+                        >
+                          <Text style={styles.identityGameStatIcon}>🎮</Text>
+                          <Text style={styles.identityGameStatValue}>
+                            {accountGameStats?.games ?? '—'} game
+                          </Text>
+                        </View>
+                        {accountGameStatsError ? (
+                          <Text style={styles.identityGameStatsError}>Statistik belum tersedia</Text>
+                        ) : null}
+                      </View>
                       <Text style={styles.profileCaption}>AKUN PETAK</Text>
                     </View>
                   </View>
@@ -5258,7 +5860,7 @@ function AppContent() {
                   <Text style={styles.profileCharacterSettingsArrow}>›</Text>
                 </Pressable>
               </>
-            ) : (
+            ) : isCharacterSettingsOpen ? (
               <>
                 <Pressable
                   accessibilityRole="button"
@@ -5642,9 +6244,127 @@ function AppContent() {
                   </>
                 ) : null}
               </>
+            ) : isThemeSettingsOpen ? (
+              <>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Kembali ke profil"
+                  style={[
+                    styles.profileCharacterBackButton,
+                    styles.profileCharacterPaletteBackButton,
+                  ]}
+                  onPress={() => setIsThemeSettingsOpen(false)}
+                >
+                  <Text
+                    style={[
+                      styles.profileCharacterBackText,
+                      styles.profileCharacterPaletteAccentText,
+                    ]}
+                  >
+                    ‹  Kembali ke profil
+                  </Text>
+                </Pressable>
+                {renderThemePreferenceControl()}
+              </>
+            ) : (
+              <>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Kembali ke profil"
+                  style={[
+                    styles.profileCharacterBackButton,
+                    styles.profileCharacterPaletteBackButton,
+                  ]}
+                  onPress={() => setIsInviteFriendsOpen(false)}
+                >
+                  <Text
+                    style={[
+                      styles.profileCharacterBackText,
+                      styles.profileCharacterPaletteAccentText,
+                    ]}
+                  >
+                    ‹  Kembali ke profil
+                  </Text>
+                </Pressable>
+                <View style={styles.profileSectionHeader}>
+                  <Text style={styles.profileSectionTitle}>Ajak teman ke PETAK</Text>
+                  <Text style={styles.profileSectionMeta}>HADIAH BADGE</Text>
+                </View>
+                <Text style={styles.profileCompanionHint}>
+                  Bagikan link ini. Saat pemain baru mendaftar lewat link dan menyelesaikan satu ronde bersama kamu di room yang sama, kamu mendapat 1 badge. Setiap pemain baru hanya dihitung sekali.
+                </Text>
+                <View style={styles.profileCompanionPrivacyCard}>
+                  <Text style={styles.profileCompanionPrivacyTitle}>Link undanganmu</Text>
+                  <Text selectable style={styles.profileCompanionPrivacyHint}>
+                    {referralInviteUrl}
+                  </Text>
+                  {room?.phase === 'LOBBY' ? (
+                    <Text style={styles.profileCompanionPrivacyDisclosure}>
+                      Link ini juga menyertakan kode room {room.code}.
+                    </Text>
+                  ) : null}
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Bagikan link undangan PETAK"
+                  style={styles.primaryButton}
+                  onPress={() => void shareReferralInvite()}
+                >
+                  <Text style={styles.primaryText}>Bagikan link undangan</Text>
+                </Pressable>
+                {referralShareNotice ? (
+                  <Text accessibilityRole="status" style={styles.profileAvatarHint}>
+                    {referralShareNotice}
+                  </Text>
+                ) : null}
+                <View style={styles.profileSectionHeader}>
+                  <Text style={styles.profileSectionTitle}>Progres undangan</Text>
+                  <Text style={styles.profileSectionMeta}>AKUN BARU</Text>
+                </View>
+                {isReferralProgressLoading ? (
+                  <ActivityIndicator
+                    color={isLightTheme ? '#42610f' : '#c3f36b'}
+                    size="small"
+                  />
+                ) : referralProgressError ? (
+                  <View>
+                    <Text accessibilityRole="alert" style={styles.profileCompanionPrivacyError}>
+                      {referralProgressError}
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      style={styles.profileReferralRetryButton}
+                      onPress={() => setReferralProgressRefreshKey((key) => key + 1)}
+                    >
+                      <Text style={styles.profileReferralRetryText}>Coba lagi</Text>
+                    </Pressable>
+                  </View>
+                ) : referralProgress ? (
+                  <View style={styles.profileCompanionStatsGrid}>
+                    <View style={styles.profileCompanionStatsItem}>
+                      <Text style={styles.profileCompanionStatsValue}>
+                        {referralProgress.invitedCount}
+                      </Text>
+                      <Text style={styles.profileCompanionStatsLabel}>Terdaftar</Text>
+                    </View>
+                    <View style={styles.profileCompanionStatsItem}>
+                      <Text style={styles.profileCompanionStatsValue}>
+                        {referralProgress.rewardedCount}
+                      </Text>
+                      <Text style={styles.profileCompanionStatsLabel}>Badge didapat</Text>
+                    </View>
+                    <View style={styles.profileCompanionStatsItem}>
+                      <Text style={styles.profileCompanionStatsValue}>
+                        {referralProgress.pendingCount}
+                      </Text>
+                      <Text style={styles.profileCompanionStatsLabel}>Menunggu ronde</Text>
+                    </View>
+                  </View>
+                ) : null}
+              </>
             )}
 
-            {!isCharacterSettingsOpen ? (
+            {!isProfileSubpage ? (
               <>
             <View style={styles.profileSectionHeader}>
               <Text style={styles.profileSectionTitle}>AI Companion</Text>
@@ -5737,108 +6457,35 @@ function AppContent() {
               <Text style={styles.profileSectionTitle}>Tampilan</Text>
               <Text style={styles.profileSectionMeta}>PREFERENSI PERANGKAT</Text>
             </View>
-            {renderThemePreferenceControl()}
-
-            <View style={styles.profileSectionHeader}>
-              <Text style={styles.profileSectionTitle}>Suara peringatan</Text>
-              <Text style={styles.profileSectionMeta}>TEXT-TO-SPEECH</Text>
-            </View>
-            <Text style={styles.profileSpeechHint}>
-              Pilih suara bahasa Indonesia yang tersedia di perangkat. Istilah game berbahasa Inggris memakai suara Inggris bila tersedia; jika tidak, digunakan pelafalan pendekatan. Preferensi suara Indonesia disimpan per akun di perangkat ini.
-            </Text>
-            {isSpeechVoiceLoading ? (
-              <View style={styles.profileSpeechLoading}>
-                <ActivityIndicator
-                  color={isLightTheme ? '#42610f' : '#c3f36b'}
-                  size="small"
-                />
-                <Text style={styles.profileSpeechHint}>Memuat suara perangkat...</Text>
-              </View>
-            ) : (
-              <View style={styles.profileSpeechOptions}>
-                <Pressable
-                  accessibilityRole="radio"
-                  accessibilityState={{
-                    checked: selectedSpeechVoiceId === null,
-                    disabled: isSpeechVoiceSaving,
-                  }}
-                  disabled={isSpeechVoiceSaving}
-                  style={[
-                    styles.profileSpeechOption,
-                    selectedSpeechVoiceId === null && styles.profileSpeechOptionSelected,
-                    isSpeechVoiceSaving && styles.disabledButton,
-                  ]}
-                  onPress={() => void selectSpeechVoice(null)}
-                >
-                  <View style={styles.profileSpeechRadio}>
-                    {selectedSpeechVoiceId === null ? <View style={styles.profileSpeechRadioSelected} /> : null}
-                  </View>
-                  <View style={styles.profileSpeechVoiceCopy}>
-                    <Text style={styles.profileSpeechVoiceName}>Suara sistem (default)</Text>
-                    <Text style={styles.profileSpeechVoiceLanguage}>Mengikuti pilihan perangkat</Text>
-                  </View>
-                </Pressable>
-                {availableSpeechVoices.map((voice) => {
-                  const isSelected = selectedSpeechVoiceId === voice.identifier;
-                  return (
-                    <Pressable
-                      key={voice.identifier}
-                      accessibilityRole="radio"
-                      accessibilityLabel={`${voice.name}, ${voice.language}`}
-                      accessibilityState={{ checked: isSelected, disabled: isSpeechVoiceSaving }}
-                      disabled={isSpeechVoiceSaving}
-                      style={[
-                        styles.profileSpeechOption,
-                        isSelected && styles.profileSpeechOptionSelected,
-                        isSpeechVoiceSaving && styles.disabledButton,
-                      ]}
-                      onPress={() => void selectSpeechVoice(voice.identifier)}
-                    >
-                      <View style={styles.profileSpeechRadio}>
-                        {isSelected ? <View style={styles.profileSpeechRadioSelected} /> : null}
-                      </View>
-                      <View style={styles.profileSpeechVoiceCopy}>
-                        <Text numberOfLines={1} style={styles.profileSpeechVoiceName}>{voice.name}</Text>
-                        <Text style={styles.profileSpeechVoiceLanguage}>{voice.language}</Text>
-                      </View>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            )}
-            {!isSpeechVoiceLoading && availableSpeechVoices.length === 0 ? (
-              <Text style={styles.profileSpeechHint}>
-                Tidak ada suara bahasa Indonesia terpisah yang ditemukan. Anda dapat mengunduhnya melalui pengaturan Teks-ke-ucapan perangkat.
-              </Text>
-            ) : null}
             <Pressable
               accessibilityRole="button"
-              disabled={isSpeechVoiceLoading || isSpeechVoiceSaving || isSpeechVoicePreviewing}
-              style={[
-                styles.profileSpeechPreviewButton,
-                (isSpeechVoiceLoading || isSpeechVoiceSaving || isSpeechVoicePreviewing) &&
-                  styles.disabledButton,
-              ]}
-              onPress={() => void previewSpeechVoice()}
+              accessibilityLabel="Buka pengaturan tampilan"
+              style={styles.profileCharacterSettingsButton}
+              onPress={() => setIsThemeSettingsOpen(true)}
             >
-              <Text style={styles.profileSpeechPreviewText}>
-                {isSpeechVoicePreviewing ? 'MEMUTAR CONTOH...' : 'DENGARKAN CONTOH'}
-              </Text>
-            </Pressable>
-            {isSpeechVoiceSaving ? (
-              <View style={styles.profileSpeechLoading}>
-                <ActivityIndicator
-                  color={isLightTheme ? '#42610f' : '#c3f36b'}
-                  size="small"
-                />
-                <Text style={styles.profileSpeechHint}>Menyimpan preferensi suara...</Text>
+              <View style={styles.profileCharacterSettingsCopy}>
+                <Text style={styles.profileCharacterSettingsTitle}>Tema permainan</Text>
+                <Text style={styles.profileCharacterSettingsHint}>
+                  {THEME_PREFERENCE_OPTIONS.find((option) => option.value === themePreference)?.label ?? 'Gelap'}
+                  {' · Atur tampilan terang atau gelap'}
+                </Text>
               </View>
-            ) : null}
-            {speechVoiceError ? (
-              <Text accessibilityRole="alert" style={styles.profileSpeechError}>
-                {speechVoiceError}
-              </Text>
-            ) : null}
+              <Text style={styles.profileCharacterSettingsArrow}>›</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Buka halaman undang teman"
+              style={styles.profileCharacterSettingsButton}
+              onPress={openInviteFriends}
+            >
+              <View style={styles.profileCharacterSettingsCopy}>
+                <Text style={styles.profileCharacterSettingsTitle}>Undang teman</Text>
+                <Text style={styles.profileCharacterSettingsHint}>
+                  Bagikan link dan dapatkan badge setelah bermain bersama
+                </Text>
+              </View>
+              <Text style={styles.profileCharacterSettingsArrow}>›</Text>
+            </Pressable>
 
             <View style={styles.profileSectionHeader}>
               <Text style={styles.profileSectionTitle}>Saldo & hadiah</Text>
@@ -5864,7 +6511,7 @@ function AppContent() {
               </View>
             </View>
             <Text style={styles.profileHint}>
-              Badge diperoleh dari kemenangan. Gunakan badge untuk menukar kredit siaran atau scan.
+              Badge diperoleh dari kemenangan atau undangan teman yang berhasil. Gunakan badge untuk menukar kredit siaran atau scan.
             </Text>
 
             {!room ? (
@@ -5897,6 +6544,7 @@ function AppContent() {
       onRequestClose={() => setIsGameTimelineOpen(false)}
     >
       <SafeAreaView style={styles.gameTimelinePage}>
+        {renderPageBackdrop('TIMELINE')}
         <View style={styles.leaderboardModalHeader}>
           <View style={styles.leaderboardModalHeading}>
             <Text style={styles.leaderboardModalEyebrow}>
@@ -6525,17 +7173,19 @@ function AppContent() {
   };
 
   const renderAuth = () => (
-    <View style={styles.card}>
-      <Text style={styles.cardEyebrow}>AKSES PEMAIN</Text>
-      <Text style={styles.sectionTitle}>{authMode === 'login' ? 'Siap masuk arena?' : 'Buat identitas pemain'}</Text>
-      <Text style={styles.mutedText}>
-        Masuk untuk membuat room atau bergabung. Badge kemenangan tersimpan di akun Anda.
+    <View style={[styles.card, styles.authCard]}>
+      <Text style={[styles.cardEyebrow, styles.authCardEyebrow]}>MODE PETUALANGAN</Text>
+      <Text style={[styles.sectionTitle, styles.authSectionTitle]}>
+        {authMode === 'login' ? 'Siap masuk arena?' : 'Buat identitas pemain'}
       </Text>
-      <Text style={styles.label}>Username</Text>
+      <Text style={[styles.mutedText, styles.authDescription]}>
+        Masuk ke arena, pilih peran, dan ajak teman berburu atau bersembunyi.
+      </Text>
+      <Text style={[styles.label, styles.authLabel]}>Username</Text>
       <TextInput
         value={authUsername}
         onChangeText={setAuthUsername}
-        style={styles.input}
+        style={[styles.input, styles.authInput]}
         autoCapitalize="none"
         autoCorrect={false}
         maxLength={30}
@@ -6545,11 +7195,16 @@ function AppContent() {
       <Text style={styles.usernameHint}>
         3–30 karakter tanpa spasi: huruf, angka, titik, atau garis bawah.
       </Text>
-      <Text style={styles.label}>Password</Text>
+      {authMode === 'register' && referrerAccountId ? (
+        <Text style={styles.usernameHint}>
+          Link undangan teman terdeteksi. Selesaikan satu ronde bersama di room yang sama agar temanmu mendapat 1 badge.
+        </Text>
+      ) : null}
+      <Text style={[styles.label, styles.authLabel]}>Password</Text>
       <TextInput
         value={authPassword}
         onChangeText={setAuthPassword}
-        style={styles.input}
+        style={[styles.input, styles.authInput]}
         secureTextEntry
         maxLength={128}
         placeholder="Minimal 8 karakter"
@@ -6559,24 +7214,28 @@ function AppContent() {
       <Pressable
         disabled={isAuthenticating || !authUsername.trim() || !authPassword}
         accessibilityState={{ busy: isAuthenticating }}
-        style={[styles.primaryButton, (isAuthenticating || !authUsername.trim() || !authPassword) && styles.disabledButton]}
+        style={[
+          styles.primaryButton,
+          styles.authPrimaryButton,
+          (isAuthenticating || !authUsername.trim() || !authPassword) && styles.disabledButton,
+        ]}
         onPress={authenticateAccount}
       >
         <View style={styles.loadingButtonContent}>
           {isAuthenticating ? <ActivityIndicator color="#072131" size="small" /> : null}
-          <Text style={styles.primaryText}>
+          <Text style={[styles.primaryText, styles.authPrimaryText]}>
             {isAuthenticating ? 'Memproses...' : authMode === 'login' ? 'Login' : 'Buat akun'}
           </Text>
         </View>
       </Pressable>
       <Pressable
-        style={styles.secondaryButton}
+        style={[styles.secondaryButton, styles.authSecondaryButton]}
         onPress={() => {
           setAuthMode((mode) => mode === 'login' ? 'register' : 'login');
           setAuthError('');
         }}
       >
-        <Text style={styles.secondaryText}>
+        <Text style={[styles.secondaryText, styles.authSecondaryText]}>
           {authMode === 'login' ? 'Belum punya akun? Daftar' : 'Sudah punya akun? Login'}
         </Text>
       </Pressable>
@@ -6590,6 +7249,7 @@ function AppContent() {
       onRequestClose={() => setIsLobbyDetailsOpen(false)}
     >
       <SafeAreaView style={styles.lobbyDetailsModalContainer}>
+        {renderPageBackdrop('LOBBY_DETAILS')}
         <View style={styles.leaderboardModalHeader}>
           <View style={styles.leaderboardModalHeading}>
             <Text style={styles.leaderboardModalEyebrow}>PENGATURAN</Text>
@@ -7192,6 +7852,7 @@ function AppContent() {
             </Pressable>
           ) : !activePlayer?.isSpectator &&
             connectionStatus === 'connected' &&
+            Boolean(locationError) &&
             !isLocationInside ? (
             <Pressable
               style={styles.locationRetryButton}
@@ -7755,15 +8416,13 @@ function AppContent() {
       ) : null}
       {room?.phase === 'FINISHED' ? (
         <View style={styles.resultActionRow}>
-          {activePlayer?.isHost ? (
-            <Pressable
-              accessibilityRole="button"
-              style={[styles.resultActionButton, styles.resultRematchButton]}
-              onPress={rematch}
-            >
-              <Text style={[styles.resultActionText, styles.resultRematchText]}>Rematch</Text>
-            </Pressable>
-          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            style={[styles.resultActionButton, styles.resultRematchButton]}
+            onPress={rematch}
+          >
+            <Text style={[styles.resultActionText, styles.resultRematchText]}>Rematch</Text>
+          </Pressable>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Keluar dari room"
@@ -8196,7 +8855,7 @@ function AppContent() {
                   >
                     <Text style={styles.liveRetryText}>Sambung ulang</Text>
                   </Pressable>
-                ) : connectionStatus === 'connected' ? (
+                ) : connectionStatus === 'connected' && locationError ? (
                   <Pressable
                     accessibilityRole="button"
                     style={styles.liveRetryButton}
@@ -8502,13 +9161,11 @@ function AppContent() {
     <SafeAreaView
       style={[
         styles.container,
-        isHiderThreatMode && {
-          backgroundColor: isLightTheme ? '#f8fafc' : hiderThreatTheme.background,
-        },
+        { backgroundColor: screenBackgroundColor },
       ]}
     >
       <StatusBar hidden animated style={isLightTheme ? 'dark' : 'light'} />
-      {!isHiderThreatMode ? (
+      {!isHiderThreatMode && isLiveMapScreen ? (
         <LinearGradient
           pointerEvents="none"
           colors={isLightTheme
@@ -8519,6 +9176,8 @@ function AppContent() {
           end={{ x: 0.14, y: 1 }}
           style={StyleSheet.absoluteFill}
         />
+      ) : !isHiderThreatMode ? (
+        renderPageBackdrop(mainBackdropPage)
       ) : null}
       {appAlertModal}
       {broadcastIntroModal}
@@ -8531,11 +9190,16 @@ function AppContent() {
       {profileModal}
       {gameTimelineModal}
       {isLiveMapScreen ? renderLiveMapScreen() : <ScrollView contentContainerStyle={styles.scrollContent}>
-        {isHomeHeroVisible && !room && !isScannerOpen ? (
+        {isAuthScreen && isHomeHeroVisible && !room && !isScannerOpen ? (
           <Animated.View
-            accessibilityLabel="Selamat datang di PETAK, sesi multipemain"
+            accessibilityLabel={
+              isAuthScreen
+                ? 'Masuk ke PETAK, game sembunyi-sembunyi'
+                : 'Selamat datang di PETAK, sesi multipemain'
+            }
             style={[
               styles.homeHeroPopup,
+              isAuthScreen && styles.authHeroPopup,
               {
                 opacity: homeHeroOpacity,
                 transform: [{ translateY: homeHeroOpacity.interpolate({ inputRange: [0, 1], outputRange: [-12, 0] }) }],
@@ -8549,12 +9213,18 @@ function AppContent() {
                 : ['#203a30', '#18373d', '#192c41']}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
-              style={[StyleSheet.absoluteFill, styles.homeHeroGradient]}
+              style={[
+                StyleSheet.absoluteFill,
+                styles.homeHeroGradient,
+                isAuthScreen && styles.authHeroGradient,
+              ]}
             />
             <View style={styles.homeHeroHeader}>
               <View style={styles.homeHeroEyebrow}>
                 <View style={styles.homeHeroSignal} />
-                <Text style={styles.homeHeroEyebrowText}>SESI MULTIPEMAIN · LIVE</Text>
+                <Text style={styles.homeHeroEyebrowText}>
+                  {isAuthScreen ? 'ARENA MULTIPEMAIN · LIVE' : 'SESI MULTIPEMAIN · LIVE'}
+                </Text>
               </View>
               <View style={styles.homeHeroHeaderActions}>
                 <View
@@ -8582,15 +9252,17 @@ function AppContent() {
                     {connectionStatus === 'connected' ? '✓' : connectionStatus === 'disconnected' ? '!' : '…'}
                   </Text>
                 </View>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Tutup welcome banner"
-                  onPress={hideHomeHero}
-                  hitSlop={8}
-                  style={styles.homeHeroDismiss}
-                >
-                  <Text style={styles.homeHeroDismissText}>×</Text>
-                </Pressable>
+                {!isAuthScreen ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Tutup welcome banner"
+                    onPress={hideHomeHero}
+                    hitSlop={8}
+                    style={styles.homeHeroDismiss}
+                  >
+                    <Text style={styles.homeHeroDismissText}>×</Text>
+                  </Pressable>
+                ) : null}
               </View>
             </View>
             <View style={[styles.homeHeroVisuals, isAuthScreen && styles.authHeroVisuals]}>
@@ -8607,7 +9279,7 @@ function AppContent() {
                   styles.homeHeroCharacterFrame,
                   isAuthScreen && styles.authHeroCharacterFrame,
                   {
-                    borderColor: '#38bdf8',
+                    borderColor: isAuthScreen ? '#fbbf24' : '#38bdf8',
                     backgroundColor: '#10283a',
                     transform: [
                       {
@@ -8656,7 +9328,7 @@ function AppContent() {
             </Text>
             <View style={styles.homeHeroRoleBadge}>
               <Text style={styles.homeHeroRoleBadgeText}>
-                {isAuthScreen ? 'AI COMPANION UNGGULAN' : 'TEMAN PETUALANGAN'} ·{' '}
+                {isAuthScreen ? 'KARAKTER PILIHAN' : 'TEMAN PETUALANGAN'} ·{' '}
                 {homeHeroCompanion.name.toUpperCase()}
               </Text>
             </View>
@@ -8699,61 +9371,149 @@ function AppContent() {
         ) : !room ? !account ? (
           renderAuth()
         ) : (
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Mulai sesi</Text>
-            <Text style={styles.mutedText}>
-              Lokasi diperlukan untuk menetapkan titik pusat area permainan saat room dibuat.
-            </Text>
+          <View style={[styles.card, styles.startSessionCard]}>
+            <View style={styles.startSessionHeading}>
+              <View style={styles.startSessionHeadingCopy}>
+                <Text style={styles.startSessionEyebrow}>RUANG MAIN</Text>
+                <Text style={styles.startSessionTitle}>Mulai sesi</Text>
+                <Text style={styles.startSessionSubtitle}>
+                  Buat room baru atau langsung bergabung dengan teman.
+                </Text>
+              </View>
+              <View style={styles.startSessionHeaderActions}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    isGuideLabelVisible ? 'Buka panduan bermain' : 'Tampilkan label panduan'
+                  }
+                  accessibilityHint={
+                    isGuideLabelVisible
+                      ? 'Buka panduan bermain.'
+                      : 'Ketuk lagi untuk membuka panduan bermain.'
+                  }
+                  accessibilityState={{ expanded: isGuideLabelVisible }}
+                  style={styles.startSessionGuideButton}
+                  onPress={() => {
+                    if (!isGuideLabelVisible) {
+                      setIsGuideLabelVisible(true);
+                      return;
+                    }
+                    setIsGettingStartedVisible(true);
+                  }}
+                >
+                  <View style={styles.startSessionGuideIcon}>
+                    <Text style={styles.startSessionGuideIconText}>?</Text>
+                  </View>
+                  {isGuideLabelVisible ? (
+                    <Text style={styles.startSessionGuideText}>Panduan</Text>
+                  ) : null}
+                </Pressable>
+              </View>
+            </View>
+
             <View style={styles.homeWelcome}>
               <Image
-                accessibilityLabel="Avatar profil"
+                accessibilityLabel={`Avatar karakter ${selectedProfileAvatar.name}`}
                 source={getProfileAvatarSource(account.avatarId)}
-                resizeMode="cover"
+                resizeMode={selectedProfileAvatar.id === DEFAULT_PROFILE_AVATAR_ID ? 'contain' : 'cover'}
                 style={styles.homeWelcomeAvatar}
               />
               <View style={styles.homeWelcomeCopy}>
-                <Text style={styles.playerNamePreviewLabel}>SELAMAT DATANG</Text>
-                <Text style={styles.playerNamePreviewValue}>@{account.username}</Text>
+                <View style={styles.homeWelcomeNameRow}>
+                  <Text numberOfLines={1} style={styles.playerNamePreviewValue}>
+                    @{account.username}
+                  </Text>
+                  {selectedProfileAvatar.id !== DEFAULT_PROFILE_AVATAR_ID ? (
+                    <>
+                      <Text style={styles.homeWelcomeAliasSeparator}>|</Text>
+                      <Text numberOfLines={1} style={styles.homeWelcomeAlias}>
+                        {selectedProfileAvatar.name}
+                      </Text>
+                    </>
+                  ) : null}
+                  <View
+                    accessibilityLabel={`${account.badges} badge`}
+                    accessible
+                    style={styles.identityBadgeCount}
+                  >
+                    <Text style={styles.identityBadgeCountIcon}>✦</Text>
+                    <Text style={styles.identityBadgeCountValue}>{account.badges}</Text>
+                  </View>
+                </View>
+                <View style={styles.identityGameStatsRow}>
+                  <View
+                    accessibilityLabel={`${accountGameStats?.wins ?? '—'} menang`}
+                    accessible
+                    style={styles.identityGameStat}
+                  >
+                    <Text style={styles.identityGameStatIcon}>🏆</Text>
+                    <Text style={styles.identityGameStatValue}>
+                      {accountGameStats?.wins ?? '—'} menang
+                    </Text>
+                  </View>
+                  <View
+                    accessibilityLabel={`${accountGameStats?.games ?? '—'} game dimainkan`}
+                    accessible
+                    style={styles.identityGameStat}
+                  >
+                    <Text style={styles.identityGameStatIcon}>🎮</Text>
+                    <Text style={styles.identityGameStatValue}>
+                      {accountGameStats?.games ?? '—'} game
+                    </Text>
+                  </View>
+                  {accountGameStatsError ? (
+                    <Text style={styles.identityGameStatsError}>Statistik belum tersedia</Text>
+                  ) : null}
+                </View>
               </View>
             </View>
 
             <Pressable
               accessibilityRole="button"
-              style={styles.homeGuideButton}
-              onPress={() => setIsGettingStartedVisible(true)}
-            >
-              <View style={styles.homeGuideIcon}>
-                <Text style={styles.homeGuideIconText}>?</Text>
-              </View>
-              <View style={styles.homeGuideCopy}>
-                <Text style={styles.homeGuideTitle}>Panduan bermain</Text>
-                <Text style={styles.homeGuideDescription}>Pelajari alur permainan PETAK</Text>
-              </View>
-              <Text style={styles.homeGuideArrow}>›</Text>
-            </Pressable>
-
-            <Pressable
+              accessibilityLabel={isCreatingRoom ? 'Mengambil titik GPS untuk membuat room' : 'Buat room baru'}
+              accessibilityState={{ busy: isCreatingRoom, disabled: isCreatingRoom }}
               disabled={isCreatingRoom}
-              style={[styles.primaryButton, isCreatingRoom && styles.disabledButton]}
+              style={[
+                styles.primaryButton,
+                styles.startSessionCreateButton,
+                isCreatingRoom && styles.disabledButton,
+              ]}
               onPress={createRoom}
             >
-              <View style={styles.loadingButtonContent}>
-                {isCreatingRoom ? <ActivityIndicator color="#072131" size="small" /> : null}
-                <Text style={styles.primaryText}>
-                  {isCreatingRoom ? 'Mengambil titik GPS...' : 'Buat room'}
-                </Text>
+              <View style={styles.startSessionCreateContent}>
+                <View style={styles.startSessionCreateCopy}>
+                  {isCreatingRoom ? (
+                    <ActivityIndicator color="#072131" size="small" />
+                  ) : (
+                    <View style={styles.startSessionCreateIcon}>
+                      <Text style={styles.startSessionCreateIconText}>+</Text>
+                    </View>
+                  )}
+                  <Text style={[styles.primaryText, styles.startSessionCreateText]}>
+                    {isCreatingRoom ? 'Mengambil titik GPS...' : 'Buat room baru'}
+                  </Text>
+                </View>
+                {!isCreatingRoom ? (
+                  <Text style={styles.startSessionCreateArrow}>›</Text>
+                ) : null}
               </View>
             </Pressable>
 
             <View style={styles.divider} />
 
-            <Text style={styles.label}>Kode room</Text>
+            <View style={styles.startSessionJoinHeading}>
+              <Text style={styles.startSessionJoinTitle}>Punya kode room?</Text>
+              <Text style={styles.startSessionJoinDescription}>
+                Masukkan kode dari teman atau pindai QR.
+              </Text>
+            </View>
             <View style={styles.joinRoomRow}>
               <TextInput
+                accessibilityLabel="Kode room"
                 value={joinCode}
                 onChangeText={setJoinCode}
                 style={[styles.input, styles.joinRoomInput]}
-                placeholder="ABC123"
+                placeholder="Kode room"
                 autoCapitalize="characters"
                 placeholderTextColor={isLightTheme ? '#64748b' : '#9db0c4'}
               />
@@ -8780,9 +9540,37 @@ function AppContent() {
               </Pressable>
             </View>
 
-            <Pressable style={styles.secondaryButton} onPress={() => joinRoom()}>
-              <Text style={styles.secondaryText}>Gabung room</Text>
-            </Pressable>
+            <View style={styles.startSessionJoinActions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Undang teman"
+                accessibilityHint="Lihat progres undangan dan bagikan link."
+                style={styles.qrScanButton}
+                onPress={openInviteFriends}
+              >
+                <Svg width={22} height={22} viewBox="0 0 24 24">
+                  <Path
+                    fill="none"
+                    stroke={isLightTheme ? '#334155' : '#f3f7ff'}
+                    strokeWidth={1.8}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3.5 20v-1.2A4.8 4.8 0 0 1 8.3 14h1.4a4.8 4.8 0 0 1 4.8 4.8V20M19 7v6m-3-3h6"
+                  />
+                </Svg>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                style={[
+                  styles.secondaryButton,
+                  styles.startSessionJoinButton,
+                  styles.startSessionJoinButtonInline,
+                ]}
+                onPress={() => joinRoom()}
+              >
+                <Text style={styles.secondaryText}>Gabung room</Text>
+              </Pressable>
+            </View>
 
             <View style={styles.divider} />
 
@@ -8863,6 +9651,7 @@ function AppContent() {
                 onPress={() => {
                   setIsFeatureLauncherOpen(false);
                   closeCharacterSettings();
+                  setIsThemeSettingsOpen(false);
                   setIsProfileOpen(true);
                 }}
               >
@@ -8936,6 +9725,32 @@ function createStyles(isLightTheme: boolean) {
   container: {
     flex: 1,
     backgroundColor: 'transparent',
+  },
+  pageBackdropRing: {
+    position: 'absolute',
+    borderWidth: 1,
+    borderRadius: 999,
+  },
+  pageBackdropRingLarge: {
+    width: 310,
+    height: 310,
+    top: -150,
+    right: -112,
+  },
+  pageBackdropRingSmall: {
+    width: 200,
+    height: 200,
+    top: -82,
+    right: -28,
+  },
+  pageBackdropDiamond: {
+    position: 'absolute',
+    width: 76,
+    height: 76,
+    left: 30,
+    bottom: 116,
+    borderWidth: 1,
+    transform: [{ rotate: '45deg' }],
   },
   startupLoadingScreen: {
     flex: 1,
@@ -9634,13 +10449,13 @@ function createStyles(isLightTheme: boolean) {
     backgroundColor: '#0b1725',
   },
   profileCharacterPaletteContainer: {
-    backgroundColor: isLightTheme ? '#f8fafc' : '#0c111b',
+    backgroundColor: 'transparent',
   },
   profileCharacterPaletteContent: {
-    backgroundColor: isLightTheme ? '#f8fafc' : '#0c111b',
+    backgroundColor: 'transparent',
   },
   profileCharacterPaletteHeader: {
-    backgroundColor: isLightTheme ? '#f8fafc' : '#0c111b',
+    backgroundColor: 'transparent',
     borderBottomColor: isLightTheme ? '#cbd5e1' : 'rgba(187, 204, 226, 0.11)',
   },
   profileCharacterPaletteEyebrow: {
@@ -10059,6 +10874,16 @@ function createStyles(isLightTheme: boolean) {
     fontSize: 10,
     lineHeight: 15,
   },
+  profileReferralRetryButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+  },
+  profileReferralRetryText: {
+    color: isLightTheme ? '#0369a1' : '#67e8f9',
+    fontSize: 11,
+    fontWeight: '800',
+    textDecorationLine: 'underline',
+  },
   profileCompanionStats: {
     gap: 8,
     paddingTop: 10,
@@ -10318,88 +11143,6 @@ function createStyles(isLightTheme: boolean) {
     lineHeight: 16,
     marginBottom: 12,
   },
-  profileSpeechHint: {
-    color: '#9db0c4',
-    fontSize: 11,
-    lineHeight: 16,
-    marginBottom: 8,
-  },
-  profileSpeechLoading: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 10,
-  },
-  profileSpeechOptions: {
-    gap: 7,
-    marginBottom: 10,
-  },
-  profileSpeechOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minHeight: 52,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#122237',
-    borderWidth: 1,
-    borderColor: '#294057',
-    borderRadius: 12,
-  },
-  profileSpeechOptionSelected: {
-    backgroundColor: '#163b43',
-    borderColor: '#77e0c7',
-  },
-  profileSpeechRadio: {
-    width: 18,
-    height: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#7f9bb5',
-    borderRadius: 9,
-  },
-  profileSpeechRadioSelected: {
-    width: 10,
-    height: 10,
-    backgroundColor: '#77e0c7',
-    borderRadius: 5,
-  },
-  profileSpeechVoiceCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  profileSpeechVoiceName: {
-    color: '#e2e8f0',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  profileSpeechVoiceLanguage: {
-    color: '#7f9bb5',
-    fontSize: 9,
-    marginTop: 2,
-  },
-  profileSpeechPreviewButton: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-    marginBottom: 8,
-    backgroundColor: '#0e7490',
-    borderRadius: 11,
-  },
-  profileSpeechPreviewText: {
-    color: '#ecfeff',
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 0.8,
-  },
-  profileSpeechError: {
-    color: '#ffb454',
-    fontSize: 11,
-    lineHeight: 16,
-    marginBottom: 14,
-  },
   profileAvatarHint: {
     color: '#9db0c4',
     fontSize: 11,
@@ -10425,12 +11168,87 @@ function createStyles(isLightTheme: boolean) {
   },
   profileIdentityDetails: {
     flex: 1,
+    minWidth: 0,
     gap: 5,
+  },
+  profileIdentityNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    minWidth: 0,
   },
   profileUsername: {
     color: '#f3f7ff',
     fontSize: 19,
     fontWeight: '900',
+    flexShrink: 1,
+  },
+  profileUsernameWithAlias: {
+    fontSize: 15,
+  },
+  profileUsernameAliasSeparator: {
+    color: '#7f9bb5',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  profileUsernameAlias: {
+    color: '#c3f36b',
+    fontSize: 12,
+    fontWeight: '900',
+    flexShrink: 0,
+  },
+  identityBadgeCount: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#526c2b',
+    backgroundColor: '#26341d',
+    flexShrink: 0,
+  },
+  identityBadgeCountIcon: {
+    color: '#c3f36b',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  identityBadgeCountValue: {
+    color: '#f3f7ff',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  identityGameStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 3,
+  },
+  identityGameStat: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#3d5267',
+    backgroundColor: '#1a2936',
+    flexShrink: 0,
+  },
+  identityGameStatIcon: {
+    fontSize: 10,
+  },
+  identityGameStatValue: {
+    color: '#d8e6f4',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  identityGameStatsError: {
+    color: '#fca5a5',
+    fontSize: 9,
   },
   profileCaption: {
     color: '#67e8f9',
@@ -10808,6 +11626,16 @@ function createStyles(isLightTheme: boolean) {
     elevation: 6,
     marginBottom: 16,
   },
+  authCard: {
+    alignSelf: 'center',
+    backgroundColor: '#102337',
+    borderWidth: 1,
+    borderColor: '#2c6570',
+    borderRadius: 22,
+    width: '100%',
+    maxWidth: 560,
+    padding: 20,
+  },
   lobbyScreen: {
     width: '100%',
     paddingBottom: 12,
@@ -11108,6 +11936,60 @@ function createStyles(isLightTheme: boolean) {
     fontWeight: '700',
     marginBottom: 12,
   },
+  authSectionTitle: {
+    color: '#f8fafc',
+    fontSize: 25,
+    fontWeight: '900',
+    marginBottom: 8,
+  },
+  authDescription: {
+    color: '#b8c9d8',
+    fontSize: 13,
+    lineHeight: 20,
+    marginBottom: 8,
+  },
+  authCardEyebrow: {
+    color: '#c3f36b',
+    letterSpacing: 1.8,
+  },
+  authLabel: {
+    color: '#d3e2ef',
+    fontWeight: '800',
+  },
+  authInput: {
+    minHeight: 50,
+    backgroundColor: '#0b1c2c',
+    borderColor: '#36576c',
+    borderRadius: 14,
+  },
+  authPrimaryButton: {
+    minHeight: 52,
+    justifyContent: 'center',
+    backgroundColor: '#c3f36b',
+    borderWidth: 1,
+    borderColor: '#e0ff9a',
+    borderRadius: 15,
+    shadowColor: '#84cc16',
+    shadowOpacity: 0.22,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  authPrimaryText: {
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: 0.4,
+  },
+  authSecondaryButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#29465a',
+    borderRadius: 14,
+  },
+  authSecondaryText: {
+    color: '#a7f3d0',
+    fontSize: 14,
+  },
   cardEyebrow: {
     color: '#fbbf24',
     fontSize: 10,
@@ -11130,6 +12012,16 @@ function createStyles(isLightTheme: boolean) {
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.24,
     shadowRadius: 20,
+  },
+  authHeroPopup: {
+    borderColor: '#397284',
+    borderRadius: 22,
+    padding: 20,
+    shadowColor: '#1dd3b0',
+    shadowOpacity: 0.18,
+  },
+  authHeroGradient: {
+    borderRadius: 22,
   },
   homeHeroGradient: {
     borderRadius: 18,
@@ -11184,9 +12076,10 @@ function createStyles(isLightTheme: boolean) {
     width: 156,
     height: 172,
     borderRadius: 18,
+    borderWidth: 2,
   },
   authHeroBlink: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   authHeroBlinkEye: {
     position: 'absolute',
@@ -11576,78 +12469,208 @@ function createStyles(isLightTheme: boolean) {
     textAlign: 'center',
     marginTop: 8,
   },
-  homeWelcome: {
+  startSessionCard: {
+    alignSelf: 'center',
+    width: '100%',
+    maxWidth: 760,
+    backgroundColor: '#101e31',
+    borderWidth: 1,
+    borderColor: '#29465a',
+    padding: 18,
+  },
+  startSessionHeading: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 12,
-    backgroundColor: '#1f2d3d',
-    borderRadius: 14,
-    padding: 12,
-    marginTop: 14,
     marginBottom: 8,
   },
-  homeWelcomeAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-  },
-  homeWelcomeCopy: {
+  startSessionHeadingCopy: {
     flex: 1,
   },
-  homeGuideButton: {
-    minHeight: 64,
+  startSessionHeaderActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 12,
-    marginBottom: 8,
+    gap: 8,
+  },
+  startSessionEyebrow: {
+    color: '#c3f36b',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1.6,
+    marginBottom: 5,
+  },
+  startSessionTitle: {
+    color: '#f3f7ff',
+    fontSize: 26,
+    fontWeight: '900',
+    marginBottom: 4,
+  },
+  startSessionSubtitle: {
+    color: '#9db0c4',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  startSessionGuideButton: {
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    paddingHorizontal: 8,
     backgroundColor: '#102d3a',
     borderWidth: 1,
     borderColor: '#1c6471',
-    borderRadius: 14,
+    borderRadius: 13,
   },
-  homeGuideIcon: {
-    width: 34,
-    height: 34,
+  startSessionGuideIcon: {
+    width: 24,
+    height: 24,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#164e63',
-    borderRadius: 17,
+    borderRadius: 12,
   },
-  homeGuideIconText: {
+  startSessionGuideIconText: {
     color: '#cffafe',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  startSessionGuideText: {
+    color: '#e0f2fe',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  homeWelcome: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1f2d3d',
+    borderRadius: 14,
+    minHeight: 88,
+    paddingVertical: 12,
+    paddingLeft: 102,
+    paddingRight: 12,
+    marginTop: 28,
+    marginBottom: 14,
+    position: 'relative',
+  },
+  homeWelcomeAvatar: {
+    position: 'absolute',
+    left: 12,
+    top: -16,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 3,
+    borderColor: '#c3f36b',
+    backgroundColor: '#0f172a',
+    zIndex: 2,
+    elevation: 4,
+  },
+  homeWelcomeCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  homeWelcomeNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    minWidth: 0,
+  },
+  homeWelcomeAliasSeparator: {
+    color: '#7f9bb5',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  homeWelcomeAlias: {
+    color: '#c3f36b',
+    fontSize: 14,
+    fontWeight: '900',
+    flexShrink: 0,
+  },
+  startSessionCreateButton: {
+    minHeight: 58,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: '#d9ff93',
+    borderRadius: 16,
+    shadowColor: '#84cc16',
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  startSessionCreateContent: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  startSessionCreateCopy: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  startSessionCreateIcon: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#d9ff93',
+    borderRadius: 10,
+  },
+  startSessionCreateIconText: {
+    color: '#14532d',
     fontSize: 20,
     fontWeight: '900',
   },
-  homeGuideCopy: {
-    flex: 1,
+  startSessionCreateText: {
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0.2,
   },
-  homeGuideTitle: {
-    color: '#e0f2fe',
-    fontSize: 13,
+  startSessionCreateArrow: {
+    color: '#072131',
+    fontSize: 25,
+    fontWeight: '600',
+  },
+  startSessionJoinHeading: {
+    marginBottom: 10,
+  },
+  startSessionJoinTitle: {
+    color: '#f3f7ff',
+    fontSize: 16,
     fontWeight: '900',
   },
-  homeGuideDescription: {
-    color: '#a5c9d6',
-    fontSize: 11,
-    marginTop: 3,
-  },
-  homeGuideArrow: {
-    color: '#67e8f9',
-    fontSize: 26,
-    fontWeight: '500',
-  },
-  playerNamePreviewLabel: {
+  startSessionJoinDescription: {
     color: '#9db0c4',
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 1,
-    marginBottom: 4,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  startSessionJoinButton: {
+    minHeight: 48,
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#3b536b',
+  },
+  startSessionJoinActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+  },
+  startSessionJoinButtonInline: {
+    flex: 1,
+    marginTop: 0,
   },
   playerNamePreviewValue: {
     color: '#dff9f1',
     fontSize: 17,
     fontWeight: '800',
+    flexShrink: 1,
   },
   label: {
     color: '#aabdd7',
@@ -13299,7 +14322,31 @@ function createStyles(isLightTheme: boolean) {
           shadowColor: '#64748b',
           shadowOpacity: 0.12,
         },
+        authCard: {
+          backgroundColor: '#ffffff',
+          borderColor: '#b7d7cc',
+          shadowColor: '#64748b',
+        },
+        authSectionTitle: { color: '#0f172a' },
+        authDescription: { color: '#475569' },
+        authCardEyebrow: { color: '#166534' },
+        authLabel: { color: '#334155' },
+        authInput: {
+          backgroundColor: '#f8fafc',
+          borderColor: '#94a3b8',
+        },
+        authPrimaryButton: {
+          backgroundColor: '#4dd9b5',
+          borderColor: '#14b8a6',
+        },
+        authPrimaryText: { color: '#072131' },
+        authSecondaryButton: {
+          backgroundColor: '#f0f9ff',
+          borderColor: '#bae6fd',
+        },
+        authSecondaryText: { color: '#075985' },
         homeHeroPopup: { backgroundColor: '#ffffff', borderColor: '#cbd5e1', shadowOpacity: 0.12 },
+        authHeroPopup: { backgroundColor: '#ffffff', borderColor: '#67a99e', shadowOpacity: 0.12 },
         homeHeroLogoFrame: { backgroundColor: '#f1f5f9', borderColor: '#cbd5e1' },
         homeHeroRoleBadge: { backgroundColor: '#e2e8f0' },
         homeHeroRoleBadgeText: { color: '#334155' },
@@ -13309,14 +14356,32 @@ function createStyles(isLightTheme: boolean) {
         homeHeroDismissText: { color: '#334155' },
         homeHeroSubtitle: { color: '#166534' },
         homeHeroDescription: { color: '#475569' },
-        homeGuideButton: { backgroundColor: '#f0f9ff', borderColor: '#bae6fd' },
-        homeGuideIcon: { backgroundColor: '#e0f2fe' },
-        homeGuideIconText: { color: '#075985' },
-        homeGuideTitle: { color: '#0f172a' },
-        homeGuideDescription: { color: '#475569' },
-        homeGuideArrow: { color: '#0369a1' },
+        startSessionCard: { backgroundColor: '#f8fafc', borderColor: '#cbd5e1' },
+        startSessionEyebrow: { color: '#166534' },
+        startSessionTitle: { color: '#0f172a' },
+        startSessionSubtitle: { color: '#475569' },
+        startSessionGuideButton: { backgroundColor: '#f0f9ff', borderColor: '#bae6fd' },
+        startSessionGuideIcon: { backgroundColor: '#e0f2fe' },
+        startSessionGuideIconText: { color: '#075985' },
+        startSessionGuideText: { color: '#075985' },
+        startSessionCreateButton: { borderColor: '#14b8a6', shadowColor: '#10b981' },
+        startSessionCreateIcon: { backgroundColor: '#d1fae5' },
+        startSessionCreateIconText: { color: '#047857' },
+        startSessionCreateText: { color: '#072131' },
+        startSessionCreateArrow: { color: '#072131' },
+        startSessionJoinTitle: { color: '#0f172a' },
+        startSessionJoinDescription: { color: '#475569' },
+        startSessionJoinButton: { backgroundColor: '#f0f9ff', borderColor: '#bae6fd' },
         homeWelcome: { backgroundColor: '#e2e8f0' },
-        playerNamePreviewLabel: { color: '#475569' },
+        homeWelcomeAvatar: { backgroundColor: '#ffffff', borderColor: '#16a34a' },
+        homeWelcomeAliasSeparator: { color: '#64748b' },
+        homeWelcomeAlias: { color: '#166534' },
+        identityBadgeCount: { backgroundColor: '#fef3c7', borderColor: '#fcd34d' },
+        identityBadgeCountIcon: { color: '#b45309' },
+        identityBadgeCountValue: { color: '#713f12' },
+        identityGameStat: { backgroundColor: '#f8fafc', borderColor: '#cbd5e1' },
+        identityGameStatValue: { color: '#334155' },
+        identityGameStatsError: { color: '#b91c1c' },
         playerNamePreviewValue: { color: '#0f172a' },
         input: {
           backgroundColor: '#ffffff',
@@ -13458,20 +14523,12 @@ function createStyles(isLightTheme: boolean) {
         profileCompanionName: { color: '#0f172a' },
         profileCompanionHint: { color: '#475569' },
         profileCompanionError: { color: '#b45309' },
-        profileSpeechHint: { color: '#475569' },
-        profileSpeechRadio: { borderColor: '#64748b' },
-        profileSpeechRadioSelected: { backgroundColor: '#0e7490' },
-        profileSpeechOption: { backgroundColor: '#ffffff', borderColor: '#cbd5e1' },
-        profileSpeechOptionSelected: { backgroundColor: '#ecfdf5' },
-        profileSpeechPreviewButton: { backgroundColor: '#0e7490' },
-        profileSpeechPreviewText: { color: '#ffffff' },
-        profileSpeechVoiceName: { color: '#0f172a' },
-        profileSpeechVoiceLanguage: { color: '#475569' },
-        profileSpeechError: { color: '#b45309' },
         profileAvatarHint: { color: '#475569' },
         profileAvatarStatusText: { color: '#047857' },
         profileAvatarError: { color: '#b45309' },
         profileUsername: { color: '#0f172a' },
+        profileUsernameAliasSeparator: { color: '#64748b' },
+        profileUsernameAlias: { color: '#166534' },
         profileCaption: { color: '#0369a1' },
         profileSectionTitle: { color: '#0f172a' },
         profileSectionMeta: { color: '#475569' },

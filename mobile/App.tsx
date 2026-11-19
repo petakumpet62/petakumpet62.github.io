@@ -207,6 +207,7 @@ type Room = {
   seekerScanCount: number | null;
   seekerScanPurchaseUsed: boolean;
   impostorLocationPin: (Coordinates & { id: string }) | null;
+  hiderObjectiveLocation?: Coordinates | null;
   badges: number | null;
   breachClues: Array<Coordinates & { id: string; playerName: string; createdAt: number }>;
   impostorDecoy: (Coordinates & { id: string; expiresAt: number }) | null;
@@ -238,7 +239,9 @@ const SPEECH_VOICE_STORAGE_KEY = 'petak.speech-voice';
 const COMPANION_VOICE_POSITION_STORAGE_KEY = 'petak.companion-voice-position';
 const BROADCAST_INTRO_STORAGE_KEY = 'petak.broadcast-intro-seen';
 const GETTING_STARTED_STORAGE_KEY = 'petak.getting-started-seen';
+const IDLE_MUSIC_ASSET = require('./assets/music/idle-theme.wav');
 const LOBBY_MUSIC_ASSET = require('./assets/music/lobby-theme.wav');
+const RESULTS_MUSIC_ASSET = require('./assets/music/results-theme.wav');
 const BROADCAST_SAMPLE_RATE = 24_000;
 const BROADCAST_MAX_DURATION_SECONDS = 7;
 const BROADCAST_ACK_TIMEOUT_MS = 25_000;
@@ -249,6 +252,7 @@ const HIDER_MOVEMENT_GUIDANCE =
   'Jika ada peserta yang mendekat, menjauhlah sambil tetap berada di dalam zona permainan.';
 const UNKNOWN_APPROACH_WARNING =
   `Hati-hati, peserta yang mendekat bisa jadi adalah Seeker. ${HIDER_MOVEMENT_GUIDANCE}`;
+const HIDER_APPROACH_WARNING_COOLDOWN_MS = 30_000;
 
 type SavedSession = {
   code: string;
@@ -629,15 +633,18 @@ function encodeBroadcastPcm(chunks: Float32Array[], inputSampleRate: number) {
   return pcm;
 }
 
-type WebLobbyMusicLoop = {
+type WebPageMusicLoop = {
   context: AudioContext;
   gain: GainNode;
   buffer: AudioBuffer | null;
   source: AudioBufferSourceNode | null;
   active: boolean;
   unlocked: boolean;
+  assetName: string | null;
+  requestId: number;
   start: () => void;
   stop: () => void;
+  load: (asset: number, assetName: string) => Promise<void>;
 };
 
 export default function App() {
@@ -1207,6 +1214,7 @@ function AppContent() {
   const previousScreenKeyRef = useRef<string | null>(null);
   const previousLocationStatusRef = useRef<LocationStatus>(null);
   const previousThreatLevelRef = useRef<ProximityThreatLevel | null>(null);
+  const lastHiderApproachWarningAtRef = useRef<number | null>(null);
   const soundEnabledRef = useRef(soundEnabled);
   const speechVoiceIdentifierRef = useRef<string | null>(selectedSpeechVoiceId);
   const englishSpeechVoiceRef = useRef<DeviceSpeechVoice | null>(null);
@@ -1257,9 +1265,10 @@ function AppContent() {
     new Animated.ValueXY(broadcastPositionRef.current)
   ).current;
   const homeHeroOpacity = useRef(new Animated.Value(1)).current;
-  const homeHeroHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const webLobbyMusicRef = useRef<WebLobbyMusicLoop | null>(null);
+  const webPageMusicRef = useRef<WebPageMusicLoop | null>(null);
+  const idleMusicPlayer = useAudioPlayer(IDLE_MUSIC_ASSET);
   const lobbyMusicPlayer = useAudioPlayer(LOBBY_MUSIC_ASSET);
+  const resultsMusicPlayer = useAudioPlayer(RESULTS_MUSIC_ASSET);
   const transitionPlayer = useAudioPlayer(require('./assets/sounds/transition.wav'));
   const countdownPlayer = useAudioPlayer(require('./assets/sounds/countdown.wav'));
   const warningPlayer = useAudioPlayer(require('./assets/sounds/warning.wav'));
@@ -1276,27 +1285,14 @@ function AppContent() {
     onBuffer: onMicrophoneBuffer,
   });
   const hideHomeHero = useCallback(() => {
-    if (homeHeroHideTimerRef.current) {
-      clearTimeout(homeHeroHideTimerRef.current);
-      homeHeroHideTimerRef.current = null;
-    }
-
     Animated.timing(homeHeroOpacity, {
       toValue: 0,
-      duration: 450,
+      duration: 220,
       useNativeDriver: true,
     }).start(({ finished }) => {
       if (finished) setIsHomeHeroVisible(false);
     });
   }, [homeHeroOpacity]);
-
-  useEffect(() => {
-    homeHeroHideTimerRef.current = setTimeout(hideHomeHero, 8000);
-    return () => {
-      if (homeHeroHideTimerRef.current) clearTimeout(homeHeroHideTimerRef.current);
-      homeHeroOpacity.stopAnimation();
-    };
-  }, [hideHomeHero, homeHeroOpacity]);
 
   const activePlayer = useMemo(() => {
     if (!room?.selfPlayerId) return null;
@@ -1888,10 +1884,14 @@ function AppContent() {
     countdownPlayer.volume = 0.3;
     warningPlayer.volume = 0.35;
     attentionPlayer.volume = 0.35;
+    idleMusicPlayer.loop = true;
+    idleMusicPlayer.volume = 0.14;
     lobbyMusicPlayer.loop = true;
     lobbyMusicPlayer.volume = 0.18;
+    resultsMusicPlayer.loop = true;
+    resultsMusicPlayer.volume = 0.16;
     transitionPlayer.volume = 0.3;
-  }, [attentionPlayer, countdownPlayer, lobbyMusicPlayer, transitionPlayer, warningPlayer]);
+  }, [attentionPlayer, countdownPlayer, idleMusicPlayer, lobbyMusicPlayer, resultsMusicPlayer, transitionPlayer, warningPlayer]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined' || !window.AudioContext) return;
@@ -1901,7 +1901,7 @@ function AppContent() {
     try {
       context = new window.AudioContext();
     } catch (error) {
-      console.error('Gagal memulai audio loop Lobby', error);
+      console.error('Gagal memulai audio latar PETAK', error);
       return;
     }
 
@@ -1909,13 +1909,15 @@ function AppContent() {
     gain.gain.value = 0.18;
     gain.connect(context.destination);
 
-    const loop: WebLobbyMusicLoop = {
+    const loop: WebPageMusicLoop = {
       context,
       gain,
       buffer: null,
       source: null,
       active: true,
       unlocked: false,
+      assetName: null,
+      requestId: 0,
       start: () => {
         if (!loop.active || !loop.unlocked || !loop.buffer || loop.source) return;
         const source = context.createBufferSource();
@@ -1932,8 +1934,25 @@ function AppContent() {
         source.stop();
         source.disconnect();
       },
+      load: async (asset: number, assetName: string) => {
+        const requestId = ++loop.requestId;
+        if (loop.assetName === assetName && loop.buffer) {
+          loop.start();
+          return;
+        }
+        loop.stop();
+        loop.buffer = null;
+        const loadedAsset = await Asset.fromModule(asset).downloadAsync();
+        const response = await fetch(loadedAsset.localUri ?? loadedAsset.uri);
+        if (!response.ok) throw new Error(`Gagal memuat musik ${assetName} (${response.status}).`);
+        const buffer = await context.decodeAudioData(await response.arrayBuffer());
+        if (disposed || requestId !== loop.requestId) return;
+        loop.assetName = assetName;
+        loop.buffer = buffer;
+        loop.start();
+      },
     };
-    webLobbyMusicRef.current = loop;
+    webPageMusicRef.current = loop;
 
     const unlockAudio = () => {
       void context.resume()
@@ -1966,24 +1985,9 @@ function AppContent() {
         console.warn('Autoplay musik menunggu interaksi pertama.', error);
       });
 
-    void (async () => {
-      const asset = await Asset.fromModule(LOBBY_MUSIC_ASSET).downloadAsync();
-      const response = await fetch(asset.localUri ?? asset.uri);
-      if (!response.ok) throw new Error(`Gagal memuat musik Lobby (${response.status}).`);
-      const buffer = await context.decodeAudioData(await response.arrayBuffer());
+    void loop.load(LOBBY_MUSIC_ASSET, 'Lobby').catch((error: unknown) => {
       if (disposed) return;
-      loop.buffer = buffer;
-      loop.start();
-    })().catch((error: unknown) => {
-      if (disposed) return;
-      console.error('Gagal memuat musik loop Lobby', error);
-      loop.stop();
-      webLobbyMusicRef.current = null;
-      gain.disconnect();
-      void context.close().catch((closeError: unknown) => {
-        console.error('Gagal menutup audio context Lobby', closeError);
-      });
-      if (loop.active) lobbyMusicPlayer.play();
+      console.error('Gagal memuat musik latar PETAK', error);
     });
 
     return () => {
@@ -1993,7 +1997,7 @@ function AppContent() {
       document.removeEventListener('visibilitychange', resumeWhenVisible);
       loop.stop();
       gain.disconnect();
-      if (webLobbyMusicRef.current === loop) webLobbyMusicRef.current = null;
+      if (webPageMusicRef.current === loop) webPageMusicRef.current = null;
       void context.close().catch((error: unknown) => {
         console.error('Gagal menutup audio context Lobby', error);
       });
@@ -2001,34 +2005,62 @@ function AppContent() {
   }, [lobbyMusicPlayer]);
 
   useEffect(() => {
-    const shouldPlay = !room || room.phase === 'LOBBY';
-    const webLoop = Platform.OS === 'web' ? webLobbyMusicRef.current : null;
+    const pageTheme: 'idle' | 'lobby' | 'results' | 'gameplay' =
+      !room
+        ? 'idle'
+        : room.phase === 'LOBBY'
+          ? 'lobby'
+          : room.phase === 'FINISHED' || room.phase === 'CANCELLED'
+            ? 'results'
+            : 'gameplay';
+    const shouldPlay = soundEnabled && pageTheme !== 'gameplay';
+
+    idleMusicPlayer.pause();
+    lobbyMusicPlayer.pause();
+    resultsMusicPlayer.pause();
+
+    const webLoop = Platform.OS === 'web' ? webPageMusicRef.current : null;
     if (webLoop) {
       webLoop.active = shouldPlay;
-      if (shouldPlay) webLoop.start();
-      else webLoop.stop();
-      return () => {
-        if (shouldPlay) webLoop.stop();
-      };
+      webLoop.gain.gain.value = shouldPlay ? 0.16 : 0;
+      if (!shouldPlay) {
+        webLoop.stop();
+        return;
+      }
+      const asset = pageTheme === 'lobby'
+        ? LOBBY_MUSIC_ASSET
+        : pageTheme === 'results'
+          ? RESULTS_MUSIC_ASSET
+          : IDLE_MUSIC_ASSET;
+      const assetName = pageTheme === 'lobby' ? 'Lobby' : pageTheme === 'results' ? 'Results' : 'Idle';
+      void webLoop.load(asset, assetName).catch((error: unknown) => {
+        console.error(`Gagal memuat musik ${assetName}`, error);
+      });
+      return;
     }
 
-    if (shouldPlay) lobbyMusicPlayer.play();
-    else lobbyMusicPlayer.pause();
+    if (!shouldPlay) return;
+    if (pageTheme === 'lobby') lobbyMusicPlayer.play();
+    else if (pageTheme === 'results') resultsMusicPlayer.play();
+    else idleMusicPlayer.play();
 
-    return () => lobbyMusicPlayer.pause();
-  }, [lobbyMusicPlayer, room?.phase]);
+    return () => {
+      idleMusicPlayer.pause();
+      lobbyMusicPlayer.pause();
+      resultsMusicPlayer.pause();
+    };
+  }, [idleMusicPlayer, lobbyMusicPlayer, resultsMusicPlayer, room?.phase, soundEnabled]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
 
-    const startLobbyMusic = () => {
-      if (!webLobbyMusicRef.current && (!room || room.phase === 'LOBBY')) {
-        lobbyMusicPlayer.play();
-      }
+    const startPageMusic = () => {
+      const loop = webPageMusicRef.current;
+      if (loop && loop.unlocked) loop.start();
     };
-    window.addEventListener('pointerdown', startLobbyMusic, { once: true });
-    return () => window.removeEventListener('pointerdown', startLobbyMusic);
-  }, [lobbyMusicPlayer, room?.phase]);
+    window.addEventListener('pointerdown', startPageMusic, { once: true });
+    return () => window.removeEventListener('pointerdown', startPageMusic);
+  }, [room?.phase]);
 
   const playSound = (player: AudioPlayer) => {
     if (!soundEnabled) return;
@@ -2075,6 +2107,15 @@ function AppContent() {
       playAlertTone();
     }
   }, [attentionPlayer]);
+
+  const announceHiderApproachWarning = useCallback(() => {
+    if (activePlayer?.role !== 'HIDER') return;
+    const now = Date.now();
+    const lastWarningAt = lastHiderApproachWarningAtRef.current;
+    if (lastWarningAt !== null && now - lastWarningAt < HIDER_APPROACH_WARNING_COOLDOWN_MS) return;
+    lastHiderApproachWarningAtRef.current = now;
+    announceGameAlert(UNKNOWN_APPROACH_WARNING);
+  }, [activePlayer?.role, announceGameAlert]);
 
   const selectSpeechVoice = async (voiceId: string | null) => {
     if (!account || isSpeechVoiceSaving) return;
@@ -2798,6 +2839,7 @@ function AppContent() {
     previousThreatLevelRef.current = threatLevel;
 
     if (room?.phase !== 'PLAYING') {
+      lastHiderApproachWarningAtRef.current = null;
       setLocationNotice((current) => current && current.includes('Ancaman') ? '' : current);
       return;
     }
@@ -2806,27 +2848,21 @@ function AppContent() {
       setLocationNotice('Ancaman kritis: jarak terlalu dekat. Keamanan aktif, getar 3 detik dipicu.');
       playSound(attentionPlayer);
       if (Platform.OS !== 'web') Vibration.vibrate([0, 3000, 150, 3000]);
-      if (activePlayer?.role === 'HIDER') {
-        announceGameAlert(UNKNOWN_APPROACH_WARNING);
-      }
+      announceHiderApproachWarning();
     } else if (threatLevel === 'YELLOW' && previousThreatLevel !== 'YELLOW') {
       setLocationNotice('Ancaman meningkat: zona waspada mulai aktif.');
       playSound(warningPlayer);
       if (Platform.OS !== 'web') Vibration.vibrate([0, 600, 150, 600]);
-      if (activePlayer?.role === 'HIDER') {
-        announceGameAlert(UNKNOWN_APPROACH_WARNING);
-      }
+      announceHiderApproachWarning();
     } else if (threatLevel === 'GREEN' && previousThreatLevel !== 'GREEN') {
       setLocationNotice('Peringatan: ada pemain lain dalam radius dekat.');
-      if (activePlayer?.role === 'HIDER') {
-        announceGameAlert(UNKNOWN_APPROACH_WARNING);
-      }
+      announceHiderApproachWarning();
     } else if (threatLevel === 'SAFE' && previousThreatLevel !== 'SAFE') {
       setLocationNotice('');
     }
   }, [
     activePlayer?.role,
-    announceGameAlert,
+    announceHiderApproachWarning,
     attentionPlayer,
     room?.phase,
     room?.proximityState?.threatLevel,
@@ -2927,8 +2963,8 @@ function AppContent() {
       }
 
       const position = await deviceLocationProvider.getCurrentLocation();
-      if (position.accuracy > 50) {
-        showAppAlert('Lokasi belum cukup akurat. Coba lagi di area dengan sinyal GPS yang lebih baik.');
+      if (position.accuracy > 100) {
+        showAppAlert('Lokasi belum cukup akurat untuk menentukan pusat room. Aktifkan GPS presisi, lalu coba lagi di area terbuka.');
         return;
       }
 
@@ -7135,8 +7171,29 @@ function AppContent() {
           <MapPanel
             center={room.playArea.center}
             radiusMeters={room.playArea.radiusMeters}
-            points={mapPoints}
-            paths={mapPaths}
+            points={[
+              ...mapPoints,
+              ...(activePlayer?.role === 'HIDER' && room.hiderObjectiveLocation
+                ? [{
+                    id: 'hider-objective',
+                    label: 'Titik misi Hider',
+                    color: '#22c55e',
+                    latitude: room.hiderObjectiveLocation.latitude,
+                    longitude: room.hiderObjectiveLocation.longitude,
+                  }]
+                : []),
+            ]}
+            paths={[
+              ...(mapPaths ?? []),
+              ...(activePlayer?.role === 'HIDER' && room.hiderObjectiveLocation
+                ? [{
+                    id: 'hider-objective-point',
+                    color: '#22c55e',
+                    coordinates: [room.hiderObjectiveLocation],
+                  }]
+                : []),
+            ]}
+            isLightTheme={isLightTheme}
           />
           <Text style={styles.mutedText}>Peta &copy; OpenStreetMap contributors</Text>
         </View>
@@ -7729,8 +7786,20 @@ function AppContent() {
         <MapPanel
           center={room.playArea.center}
           radiusMeters={room.playArea.radiusMeters}
-          points={mapPoints}
+          points={[
+            ...mapPoints,
+            ...(activePlayer?.role === 'HIDER' && room.hiderObjectiveLocation
+              ? [{
+                  id: 'hider-objective',
+                  label: 'Titik misi Hider',
+                  color: '#22c55e',
+                  latitude: room.hiderObjectiveLocation.latitude,
+                  longitude: room.hiderObjectiveLocation.longitude,
+                }]
+              : []),
+          ]}
           paths={mapPaths}
+          isLightTheme={isLightTheme}
           canPlacePin={canSelectImpostorDecoyPin}
           dismissPinOnInteraction={
             room.phase === 'PLAYING' &&
@@ -8324,7 +8393,7 @@ function AppContent() {
   if (isStartupLoading) {
     return (
       <SafeAreaView style={styles.startupLoadingScreen}>
-        <StatusBar style={isLightTheme ? 'dark' : 'light'} />
+        <StatusBar hidden animated style={isLightTheme ? 'dark' : 'light'} />
         <View style={styles.startupLoadingContent}>
           <Animated.Image
             accessibilityLabel="Logo PETAK"
@@ -8358,7 +8427,7 @@ function AppContent() {
         },
       ]}
     >
-      <StatusBar style={isLightTheme ? 'dark' : 'light'} />
+      <StatusBar hidden animated style={isLightTheme ? 'dark' : 'light'} />
       {appAlertModal}
       {broadcastIntroModal}
       {gettingStartedModal}
@@ -8369,77 +8438,59 @@ function AppContent() {
       {companionVoiceModal}
       {profileModal}
       {gameTimelineModal}
-      {isLiveMapScreen ? renderLiveMapScreen() : <ScrollView contentContainerStyle={styles.scrollContent}>
-        {isHomeHeroVisible ? (
-          <Animated.View
+      {isHomeHeroVisible && !isLiveMapScreen ? (
+        <Animated.View
+          accessibilityRole="alert"
+          style={[
+            styles.homeHeroPopup,
+            {
+              opacity: homeHeroOpacity,
+              transform: [{ translateY: homeHeroOpacity.interpolate({ inputRange: [0, 1], outputRange: [-20, 0] }) }],
+            },
+          ]}
+        >
+          <View style={styles.homeHeroSignal} />
+          <View style={styles.homeHeroPopupCopy}>
+            <Text style={styles.homeHeroEyebrowText}>SESI MULTIPEMAIN · LIVE</Text>
+            <Text style={styles.homeHeroPopupDescription}>Sembunyi. Bergerak. Bertahan.</Text>
+          </View>
+          <View
+            accessible
+            accessibilityRole="image"
+            accessibilityLabel={
+              connectionStatus === 'connected'
+                ? 'Server permainan terhubung'
+                : connectionStatus === 'reconnecting'
+                  ? 'Mencoba menyambungkan ulang ke server permainan'
+                  : connectionStatus === 'connecting'
+                    ? 'Menghubungkan ke server permainan'
+                    : 'Server permainan tidak terhubung'
+            }
             style={[
-              styles.homeHero,
-              {
-                opacity: homeHeroOpacity,
-                transform: [{ translateY: homeHeroOpacity.interpolate({ inputRange: [0, 1], outputRange: [-8, 0] }) }],
-              },
+              styles.homeHeroConnection,
+              connectionStatus === 'connected'
+                ? styles.homeHeroConnectionOnline
+                : connectionStatus === 'connecting' || connectionStatus === 'reconnecting'
+                  ? styles.homeHeroConnectionConnecting
+                  : styles.homeHeroConnectionOffline,
             ]}
           >
-            <View style={styles.homeHeroEyebrow}>
-              <View style={styles.homeHeroSignal} />
-              <Text style={styles.homeHeroEyebrowText}>SESI MULTIPEMAIN · LIVE</Text>
-              <View
-                accessible
-                accessibilityRole="image"
-                accessibilityLabel={
-                  connectionStatus === 'connected'
-                    ? 'Server permainan terhubung'
-                    : connectionStatus === 'reconnecting'
-                      ? 'Mencoba menyambungkan ulang ke server permainan'
-                      : connectionStatus === 'connecting'
-                        ? 'Menghubungkan ke server permainan'
-                        : `Server permainan tidak terhubung. Periksa server dan URL: ${SOCKET_URL}`
-                }
-                style={[
-                  styles.homeHeroConnection,
-                  connectionStatus === 'connected'
-                    ? styles.homeHeroConnectionOnline
-                    : connectionStatus === 'connecting' || connectionStatus === 'reconnecting'
-                      ? styles.homeHeroConnectionConnecting
-                      : styles.homeHeroConnectionOffline,
-                ]}
-              >
-                <Text style={styles.homeHeroConnectionIcon}>
-                  {connectionStatus === 'connected'
-                    ? '✓'
-                    : connectionStatus === 'disconnected'
-                      ? '!'
-                      : '…'}
-                </Text>
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Tutup kartu pembuka"
-                onPress={hideHomeHero}
-                style={styles.homeHeroDismiss}
-              >
-                <Text style={styles.homeHeroDismissText}>×</Text>
-              </Pressable>
-            </View>
-            <View style={styles.homeHeroBrand}>
-              <Image
-                accessibilityLabel="Logo PETAK UMPET +62"
-                source={require('./assets/logo.png')}
-                resizeMode="contain"
-                style={styles.homeHeroLogo}
-              />
-              <View style={styles.homeHeroBrandCopy}>
-                <Text style={[styles.title, styles.homeHeroTitle, isHiderThreatMode && { color: hiderThreatTheme.accent }]}>
-                  PETAK
-                </Text>
-                <Text style={styles.homeHeroSubtitle}>Sembunyi. Bergerak. Bertahan.</Text>
-                <Text style={styles.homeHeroDescription}>
-                  Jaga zona, baca situasi, dan jangan sampai tertangkap.
-                </Text>
-              </View>
-            </View>
-          </Animated.View>
-        ) : null}
+            <Text style={styles.homeHeroConnectionIcon}>
+              {connectionStatus === 'connected' ? '✓' : connectionStatus === 'disconnected' ? '!' : '…'}
+            </Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Tutup banner sesi"
+            onPress={hideHomeHero}
+            hitSlop={8}
+            style={styles.homeHeroDismiss}
+          >
+            <Text style={styles.homeHeroDismissText}>×</Text>
+          </Pressable>
+        </Animated.View>
+      ) : null}
+      {isLiveMapScreen ? renderLiveMapScreen() : <ScrollView contentContainerStyle={styles.scrollContent}>
         {account && authError && !room ? (
           <Text accessibilityLiveRegion="polite" style={styles.connectionOffline}>
             {authError}
@@ -10893,13 +10944,36 @@ function createStyles(isLightTheme: boolean) {
     letterSpacing: 1.4,
     marginBottom: 6,
   },
-  homeHero: {
+  homeHeroPopup: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    right: 12,
+    zIndex: 50,
+    elevation: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 58,
     backgroundColor: '#142438',
     borderColor: '#29465a',
     borderWidth: 1,
-    borderRadius: 22,
-    padding: 18,
-    marginBottom: 12,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    shadowColor: '#020617',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.28,
+    shadowRadius: 16,
+  },
+  homeHeroPopupCopy: {
+    flex: 1,
+  },
+  homeHeroPopupDescription: {
+    color: '#b8f5df',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 2,
   },
   homeHeroBrand: {
     flexDirection: 'row',
@@ -12997,7 +13071,8 @@ function createStyles(isLightTheme: boolean) {
           shadowColor: '#64748b',
           shadowOpacity: 0.12,
         },
-        homeHero: { backgroundColor: '#ffffff', borderColor: '#cbd5e1' },
+        homeHeroPopup: { backgroundColor: '#ffffff', borderColor: '#cbd5e1', shadowOpacity: 0.16 },
+        homeHeroPopupDescription: { color: '#166534' },
         homeHeroEyebrowText: { color: '#92400e' },
         homeHeroDismiss: { backgroundColor: '#e2e8f0' },
         homeHeroDismissText: { color: '#334155' },

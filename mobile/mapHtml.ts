@@ -8,6 +8,8 @@ export const MAP_HTML = `<!doctype html>
     <style>
       html, body, #map { width: 100%; height: 100%; min-height: 100%; margin: 0; background: #dce8ee; }
       .leaflet-control-attribution { font-size: 9px; }
+      .map-dark .leaflet-control-attribution { background: rgba(15, 23, 42, 0.82); color: #cbd5e1; }
+      .map-dark .leaflet-control-attribution a { color: #e2e8f0; }
     </style>
   </head>
   <body>
@@ -15,10 +17,27 @@ export const MAP_HTML = `<!doctype html>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
       const map = L.map('map', { zoomControl: false }).setView([0, 0], 15);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; OpenStreetMap contributors'
-      }).addTo(map);
+      let tileLayer = null;
+      let currentTheme = null;
+
+      function applyMapTheme(isLightTheme) {
+        const nextTheme = isLightTheme ? 'light' : 'dark';
+        if (nextTheme === currentTheme) return;
+        if (tileLayer) map.removeLayer(tileLayer);
+        const mapContainer = document.getElementById('map');
+        mapContainer.classList.toggle('map-dark', !isLightTheme);
+        document.body.style.background = isLightTheme ? '#dce8ee' : '#111827';
+        tileLayer = L.tileLayer(
+          isLightTheme
+            ? 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
+            : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+          isLightTheme
+            ? { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }
+            : { maxZoom: 20, subdomains: 'abcd', attribution: '&copy; OpenStreetMap contributors &copy; CARTO' }
+        ).addTo(map);
+        currentTheme = nextTheme;
+        map.invalidateSize();
+      }
       const markers = new Map();
       const paths = new Map();
       let areaCircle = null;
@@ -47,6 +66,7 @@ export const MAP_HTML = `<!doctype html>
 
       function updateMap(data) {
         currentData = data;
+        applyMapTheme(Boolean(data.isLightTheme));
         const areaKey = JSON.stringify([data.center.latitude, data.center.longitude, data.radiusMeters]);
         if (areaKey !== previousArea) {
           if (areaCircle) map.removeLayer(areaCircle);
@@ -158,6 +178,7 @@ export const serializeMapData = (data: MapPanelProps) => JSON.stringify({
   radiusMeters: data.radiusMeters,
   points: data.points,
   paths: data.paths ?? [],
+  isLightTheme: data.isLightTheme,
   canPlacePin: Boolean(data.canPlacePin),
   dismissPinOnInteraction: Boolean(data.dismissPinOnInteraction),
 });

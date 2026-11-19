@@ -24,6 +24,7 @@ export type MapPanelProps = {
   radiusMeters: number;
   points: MapPoint[];
   paths?: MapPath[];
+  isLightTheme: boolean;
   fullScreen?: boolean;
   canPlacePin?: boolean;
   dismissPinOnInteraction?: boolean;

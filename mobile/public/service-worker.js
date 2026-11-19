@@ -1,11 +1,12 @@
 const CACHE_PREFIX = 'petak-pwa-';
 // Increment this version when the app shell or PWA assets change.
-const CACHE_NAME = `${CACHE_PREFIX}v1`;
+const CACHE_NAME = `${CACHE_PREFIX}v2`;
 const APP_ROOT_URL = new URL('./', self.registration.scope).href;
 const PRECACHE_URLS = [
   APP_ROOT_URL,
   new URL('manifest.webmanifest', self.registration.scope).href,
   new URL('favicon.png', self.registration.scope).href,
+  new URL('logo-splash.png', self.registration.scope).href,
   new URL('icons/favicon-16.png', self.registration.scope).href,
   new URL('icons/favicon-32.png', self.registration.scope).href,
   new URL('icons/favicon-48.png', self.registration.scope).href,

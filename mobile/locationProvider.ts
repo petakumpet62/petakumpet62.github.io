@@ -36,10 +36,26 @@ export const deviceLocationProvider: LocationProvider = {
   },
 
   async getCurrentLocation() {
-    const position = await ExpoLocation.getCurrentPositionAsync({
-      accuracy: ExpoLocation.Accuracy.High,
+    const getFix = (accuracy: ExpoLocation.Accuracy) =>
+      ExpoLocation.getCurrentPositionAsync({ accuracy });
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('Lokasi belum tersedia dalam batas waktu.')), 12_000);
     });
-    return toLocationFix(position);
+
+    try {
+      const position = await Promise.race([getFix(ExpoLocation.Accuracy.High), timeout]);
+      if (timeoutId) clearTimeout(timeoutId);
+      return toLocationFix(position);
+    } catch (error) {
+      if (timeoutId) clearTimeout(timeoutId);
+      const lastKnown = await ExpoLocation.getLastKnownPositionAsync({
+        maxAge: 30_000,
+        requiredAccuracy: 100,
+      }).catch(() => null);
+      if (lastKnown) return toLocationFix(lastKnown);
+      throw error;
+    }
   },
 
   watchLocation(onLocation) {

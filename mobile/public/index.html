@@ -62,11 +62,30 @@
         height: 100%;
         flex: 1;
       }
+
+      .petak-launcher {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-items: center;
+        background: #0c111b;
+      }
+
+      .petak-launcher img {
+        width: min(46vw, 220px);
+        height: auto;
+        object-fit: contain;
+      }
     </style>
   </head>
   <body>
     <noscript>PETAK adalah permainan petak umpet online. Aktifkan JavaScript untuk bermain.</noscript>
-    <div id="root"></div>
+    <div id="root">
+      <div class="petak-launcher" aria-label="Memuat PETAK">
+        <img src="/logo-splash.png" alt="PETAK" />
+      </div>
+    </div>
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {

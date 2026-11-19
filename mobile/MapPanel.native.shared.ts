@@ -17,6 +17,7 @@ export function useNativeMapPanel(props: MapPanelProps) {
       props.radiusMeters,
       props.points,
       props.paths,
+      props.isLightTheme,
       props.canPlacePin,
       props.dismissPinOnInteraction,
     ]

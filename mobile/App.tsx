@@ -1,4 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -349,7 +350,6 @@ const ROLE_REVEAL_AVATARS: Record<Role, ImageSourcePropType> = {
   HIDER: require('./assets/role-avatars/hider.png'),
   IMPOSTOR: require('./assets/role-avatars/impostor.png'),
 };
-
 const ROLE_REVEAL_THEMES: Record<Role, { accent: string; background: string; border: string }> = {
   SEEKER: { accent: '#60a5fa', background: '#10294a', border: '#3b82f6' },
   HIDER: { accent: '#4ade80', background: '#102d24', border: '#22c55e' },
@@ -555,6 +555,12 @@ const PROFILE_COMPANIONS: Array<{
   },
 ];
 
+const getRandomHomeHeroCompanion = (excluding?: CompanionId): CompanionId => {
+  const candidates = PROFILE_COMPANIONS.filter(({ id }) => id !== excluding);
+  return candidates[Math.floor(Math.random() * candidates.length)]?.id
+    ?? DEFAULT_COMPANION_ID;
+};
+
 function isCompanionId(value: unknown): value is CompanionId {
   return PROFILE_COMPANIONS.some((companion) => companion.id === value);
 }
@@ -665,6 +671,12 @@ function AppContent() {
     themePreference === 'light' ||
     (themePreference === 'system' && systemColorScheme === 'light');
   const styles = useMemo(() => createStyles(isLightTheme), [isLightTheme]);
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute('content', isLightTheme ? '#f8fafc' : '#0c111b');
+  }, [isLightTheme]);
   const [joinCode, setJoinCode] = useState(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return '';
     const inviteCode = new URLSearchParams(window.location.search).get('room')?.trim().toUpperCase() ?? '';
@@ -855,6 +867,12 @@ function AppContent() {
   const [scanError, setScanError] = useState('');
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [isHomeHeroVisible, setIsHomeHeroVisible] = useState(true);
+  const [homeHeroCompanionId, setHomeHeroCompanionId] = useState<CompanionId>(
+    getRandomHomeHeroCompanion
+  );
+  const homeHeroCompanion = getProfileCompanion(homeHeroCompanionId);
+  const isAuthScreen = !isAccountLoading && !account && !room && !isScannerOpen;
+  const authScreenWasVisibleRef = useRef(false);
   const [locationError, setLocationError] = useState('');
   const [locationRetry, setLocationRetry] = useState(0);
   const [uwbAvailability, setUwbAvailability] = useState<UwbAvailability | null>(null);
@@ -1265,6 +1283,8 @@ function AppContent() {
     new Animated.ValueXY(broadcastPositionRef.current)
   ).current;
   const homeHeroOpacity = useRef(new Animated.Value(1)).current;
+  const authCharacterFloat = useRef(new Animated.Value(0)).current;
+  const authCharacterBlink = useRef(new Animated.Value(0)).current;
   const webPageMusicRef = useRef<WebPageMusicLoop | null>(null);
   const idleMusicPlayer = useAudioPlayer(IDLE_MUSIC_ASSET);
   const lobbyMusicPlayer = useAudioPlayer(LOBBY_MUSIC_ASSET);
@@ -1293,6 +1313,64 @@ function AppContent() {
       if (finished) setIsHomeHeroVisible(false);
     });
   }, [homeHeroOpacity]);
+
+  useEffect(() => {
+    if (isAuthScreen && !authScreenWasVisibleRef.current) {
+      setHomeHeroCompanionId((current) => getRandomHomeHeroCompanion(current));
+    }
+    authScreenWasVisibleRef.current = isAuthScreen;
+  }, [isAuthScreen]);
+
+  useEffect(() => {
+    if (!isAuthScreen || !isHomeHeroVisible) {
+      authCharacterFloat.stopAnimation();
+      authCharacterBlink.stopAnimation();
+      authCharacterFloat.setValue(0);
+      authCharacterBlink.setValue(0);
+      return;
+    }
+
+    const floatAnimation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(authCharacterFloat, {
+          toValue: 1,
+          duration: 1_100,
+          useNativeDriver: true,
+        }),
+        Animated.timing(authCharacterFloat, {
+          toValue: 0,
+          duration: 1_100,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    floatAnimation.start();
+    const blinkAnimation =
+      Platform.OS === 'web'
+        ? null
+        : Animated.loop(
+            Animated.sequence([
+              Animated.delay(1_800),
+              Animated.timing(authCharacterBlink, {
+                toValue: 1,
+                duration: 75,
+                useNativeDriver: true,
+              }),
+              Animated.delay(70),
+              Animated.timing(authCharacterBlink, {
+                toValue: 0,
+                duration: 110,
+                useNativeDriver: true,
+              }),
+            ])
+          );
+    blinkAnimation?.start();
+
+    return () => {
+      floatAnimation.stop();
+      blinkAnimation?.stop();
+    };
+  }, [authCharacterBlink, authCharacterFloat, isAuthScreen, isHomeHeroVisible]);
 
   const activePlayer = useMemo(() => {
     if (!room?.selfPlayerId) return null;
@@ -8375,16 +8453,18 @@ function AppContent() {
               </View>
             </View>
           ) : null}
-          {renderBroadcastControls(
-            showLiveAbility && !showLiveDetails && !showLiveSettings
-              ? {
-                  label: liveAbilityLabel,
-                  disabled: liveAbilityDisabled,
-                  color: isHiderThreatMode ? hiderThreatTheme.accent : liveRoleAccent,
-                  onPress: activateLiveAbility,
-                }
-              : null
-          )}
+          {!showLiveDetails && !showLiveSettings
+            ? renderBroadcastControls(
+                showLiveAbility
+                  ? {
+                      label: liveAbilityLabel,
+                      disabled: liveAbilityDisabled,
+                      color: isHiderThreatMode ? hiderThreatTheme.accent : liveRoleAccent,
+                      onPress: activateLiveAbility,
+                    }
+                  : null
+              )
+            : null}
         </View>
       </View>
     );
@@ -8428,6 +8508,18 @@ function AppContent() {
       ]}
     >
       <StatusBar hidden animated style={isLightTheme ? 'dark' : 'light'} />
+      {!isHiderThreatMode ? (
+        <LinearGradient
+          pointerEvents="none"
+          colors={isLightTheme
+            ? ['#e8f4d8', '#e3f4f0', '#e9effb', '#f8fafc']
+            : ['#17271e', '#102a2b', '#111e2c', '#0c111b']}
+          locations={[0, 0.34, 0.7, 1]}
+          start={{ x: 0.86, y: 0 }}
+          end={{ x: 0.14, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+      ) : null}
       {appAlertModal}
       {broadcastIntroModal}
       {gettingStartedModal}
@@ -8438,59 +8530,138 @@ function AppContent() {
       {companionVoiceModal}
       {profileModal}
       {gameTimelineModal}
-      {isHomeHeroVisible && !isLiveMapScreen ? (
-        <Animated.View
-          accessibilityRole="alert"
-          style={[
-            styles.homeHeroPopup,
-            {
-              opacity: homeHeroOpacity,
-              transform: [{ translateY: homeHeroOpacity.interpolate({ inputRange: [0, 1], outputRange: [-20, 0] }) }],
-            },
-          ]}
-        >
-          <View style={styles.homeHeroSignal} />
-          <View style={styles.homeHeroPopupCopy}>
-            <Text style={styles.homeHeroEyebrowText}>SESI MULTIPEMAIN · LIVE</Text>
-            <Text style={styles.homeHeroPopupDescription}>Sembunyi. Bergerak. Bertahan.</Text>
-          </View>
-          <View
-            accessible
-            accessibilityRole="image"
-            accessibilityLabel={
-              connectionStatus === 'connected'
-                ? 'Server permainan terhubung'
-                : connectionStatus === 'reconnecting'
-                  ? 'Mencoba menyambungkan ulang ke server permainan'
-                  : connectionStatus === 'connecting'
-                    ? 'Menghubungkan ke server permainan'
-                    : 'Server permainan tidak terhubung'
-            }
+      {isLiveMapScreen ? renderLiveMapScreen() : <ScrollView contentContainerStyle={styles.scrollContent}>
+        {isHomeHeroVisible && !room && !isScannerOpen ? (
+          <Animated.View
+            accessibilityLabel="Selamat datang di PETAK, sesi multipemain"
             style={[
-              styles.homeHeroConnection,
-              connectionStatus === 'connected'
-                ? styles.homeHeroConnectionOnline
-                : connectionStatus === 'connecting' || connectionStatus === 'reconnecting'
-                  ? styles.homeHeroConnectionConnecting
-                  : styles.homeHeroConnectionOffline,
+              styles.homeHeroPopup,
+              {
+                opacity: homeHeroOpacity,
+                transform: [{ translateY: homeHeroOpacity.interpolate({ inputRange: [0, 1], outputRange: [-12, 0] }) }],
+              },
             ]}
           >
-            <Text style={styles.homeHeroConnectionIcon}>
-              {connectionStatus === 'connected' ? '✓' : connectionStatus === 'disconnected' ? '!' : '…'}
+            <LinearGradient
+              pointerEvents="none"
+              colors={isLightTheme
+                ? ['#f5fbe9', '#e7f5f3', '#eef1fb']
+                : ['#203a30', '#18373d', '#192c41']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={[StyleSheet.absoluteFill, styles.homeHeroGradient]}
+            />
+            <View style={styles.homeHeroHeader}>
+              <View style={styles.homeHeroEyebrow}>
+                <View style={styles.homeHeroSignal} />
+                <Text style={styles.homeHeroEyebrowText}>SESI MULTIPEMAIN · LIVE</Text>
+              </View>
+              <View style={styles.homeHeroHeaderActions}>
+                <View
+                  accessible
+                  accessibilityRole="image"
+                  accessibilityLabel={
+                    connectionStatus === 'connected'
+                      ? 'Server permainan terhubung'
+                      : connectionStatus === 'reconnecting'
+                        ? 'Mencoba menyambungkan ulang ke server permainan'
+                        : connectionStatus === 'connecting'
+                          ? 'Menghubungkan ke server permainan'
+                          : 'Server permainan tidak terhubung'
+                  }
+                  style={[
+                    styles.homeHeroConnection,
+                    connectionStatus === 'connected'
+                      ? styles.homeHeroConnectionOnline
+                      : connectionStatus === 'connecting' || connectionStatus === 'reconnecting'
+                        ? styles.homeHeroConnectionConnecting
+                        : styles.homeHeroConnectionOffline,
+                  ]}
+                >
+                  <Text style={styles.homeHeroConnectionIcon}>
+                    {connectionStatus === 'connected' ? '✓' : connectionStatus === 'disconnected' ? '!' : '…'}
+                  </Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Tutup welcome banner"
+                  onPress={hideHomeHero}
+                  hitSlop={8}
+                  style={styles.homeHeroDismiss}
+                >
+                  <Text style={styles.homeHeroDismissText}>×</Text>
+                </Pressable>
+              </View>
+            </View>
+            <View style={[styles.homeHeroVisuals, isAuthScreen && styles.authHeroVisuals]}>
+              <View style={styles.homeHeroLogoFrame}>
+                <Image
+                  accessibilityLabel="Logo PETAK UMPET +62"
+                  source={require('./assets/logo.png')}
+                  resizeMode="contain"
+                  style={styles.homeHeroLogo}
+                />
+              </View>
+              <Animated.View
+                style={[
+                  styles.homeHeroCharacterFrame,
+                  isAuthScreen && styles.authHeroCharacterFrame,
+                  {
+                    borderColor: '#38bdf8',
+                    backgroundColor: '#10283a',
+                    transform: [
+                      {
+                        translateY: isAuthScreen
+                          ? authCharacterFloat.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [0, -6],
+                            })
+                          : 0,
+                      },
+                    ],
+                  },
+                ]}
+              >
+                <Image
+                  accessibilityLabel={`AI Companion ${homeHeroCompanion.name}`}
+                  source={
+                    Platform.OS === 'web'
+                      ? homeHeroCompanion.animatedImage
+                      : homeHeroCompanion.image
+                  }
+                  resizeMode="contain"
+                  style={styles.homeHeroCharacter}
+                />
+                {isAuthScreen && Platform.OS !== 'web' ? (
+                  <Animated.View
+                    accessibilityElementsHidden
+                    importantForAccessibility="no-hide-descendants"
+                    pointerEvents="none"
+                    style={[styles.authHeroBlink, { opacity: authCharacterBlink }]}
+                  >
+                    <View style={[styles.authHeroBlinkEye, { left: '37%' }]} />
+                    <View style={[styles.authHeroBlinkEye, { left: '61%' }]} />
+                  </Animated.View>
+                ) : null}
+              </Animated.View>
+            </View>
+            <Text style={styles.homeHeroTitle}>
+              {isAuthScreen ? 'MASUK KE ARENA PETAK' : 'SELAMAT DATANG DI PETAK'}
             </Text>
-          </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Tutup banner sesi"
-            onPress={hideHomeHero}
-            hitSlop={8}
-            style={styles.homeHeroDismiss}
-          >
-            <Text style={styles.homeHeroDismissText}>×</Text>
-          </Pressable>
-        </Animated.View>
-      ) : null}
-      {isLiveMapScreen ? renderLiveMapScreen() : <ScrollView contentContainerStyle={styles.scrollContent}>
+            <Text style={styles.homeHeroSubtitle}>Sembunyi. Bergerak. Bertahan.</Text>
+            <Text style={styles.homeHeroDescription}>
+              {isAuthScreen
+                ? 'Temukan teman petualanganmu, susun strategi, dan jadilah yang terakhir bertahan.'
+                : 'Buat room, kumpulkan pemain, lalu kejar misi bersama.'}
+            </Text>
+            <View style={styles.homeHeroRoleBadge}>
+              <Text style={styles.homeHeroRoleBadgeText}>
+                {isAuthScreen ? 'AI COMPANION UNGGULAN' : 'TEMAN PETUALANGAN'} ·{' '}
+                {homeHeroCompanion.name.toUpperCase()}
+              </Text>
+            </View>
+          </Animated.View>
+        ) : null}
         {account && authError && !room ? (
           <Text accessibilityLiveRegion="polite" style={styles.connectionOffline}>
             {authError}
@@ -8764,7 +8935,7 @@ function createStyles(isLightTheme: boolean) {
   const baseStyles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: 'transparent',
   },
   startupLoadingScreen: {
     flex: 1,
@@ -10945,56 +11116,130 @@ function createStyles(isLightTheme: boolean) {
     marginBottom: 6,
   },
   homeHeroPopup: {
-    position: 'absolute',
-    top: 12,
     alignSelf: 'center',
-    width: '92%',
-    maxWidth: 420,
-    zIndex: 50,
+    width: '100%',
+    maxWidth: 560,
     elevation: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minHeight: 58,
+    marginBottom: 20,
     backgroundColor: '#142438',
     borderColor: '#29465a',
     borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+    borderRadius: 18,
+    padding: 18,
     shadowColor: '#020617',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.28,
-    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.24,
+    shadowRadius: 20,
   },
-  homeHeroPopupCopy: {
-    flex: 1,
-  },
-  homeHeroPopupDescription: {
-    color: '#b8f5df',
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  homeHeroBrand: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    marginTop: 8,
-  },
-  homeHeroLogo: {
-    width: 76,
-    height: 76,
+  homeHeroGradient: {
     borderRadius: 18,
   },
-  homeHeroBrandCopy: {
-    flex: 1,
+  homeHeroHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  homeHeroHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  homeHeroVisuals: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    marginTop: 18,
+    marginBottom: 18,
+  },
+  authHeroVisuals: {
+    marginTop: 10,
+    marginBottom: 14,
+  },
+  homeHeroLogoFrame: {
+    width: 96,
+    height: 96,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0b1725',
+    borderWidth: 1,
+    borderColor: '#36516a',
+    borderRadius: 14,
+  },
+  homeHeroLogo: {
+    width: 90,
+    height: 90,
+  },
+  homeHeroCharacterFrame: {
+    width: 112,
+    height: 112,
+    overflow: 'hidden',
+    backgroundColor: '#17362c',
+    borderWidth: 1,
+    borderColor: '#4ade80',
+    borderRadius: 14,
+  },
+  authHeroCharacterFrame: {
+    width: 156,
+    height: 172,
+    borderRadius: 18,
+  },
+  authHeroBlink: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  authHeroBlinkEye: {
+    position: 'absolute',
+    top: '34%',
+    width: 14,
+    height: 3,
+    backgroundColor: '#241a18',
+    borderRadius: 2,
+  },
+  homeHeroCharacter: {
+    width: '100%',
+    height: '100%',
+  },
+  homeHeroTitle: {
+    color: '#f3f6fb',
+    fontSize: 21,
+    fontWeight: '900',
+    textAlign: 'center',
+    lineHeight: 27,
+  },
+  homeHeroSubtitle: {
+    color: '#b8f5df',
+    fontSize: 15,
+    fontWeight: '800',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  homeHeroDescription: {
+    alignSelf: 'center',
+    maxWidth: 360,
+    color: '#aabdd7',
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  homeHeroRoleBadge: {
+    alignSelf: 'center',
+    marginTop: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    backgroundColor: '#26384b',
+    borderRadius: 8,
+  },
+  homeHeroRoleBadgeText: {
+    color: '#dce8f5',
+    fontSize: 9,
+    fontWeight: '900',
   },
   homeHeroEyebrow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    justifyContent: 'space-between',
   },
   homeHeroSignal: {
     width: 8,
@@ -11014,7 +11259,6 @@ function createStyles(isLightTheme: boolean) {
     borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 'auto',
   },
   homeHeroConnectionOnline: {
     backgroundColor: '#14532d',
@@ -11032,9 +11276,9 @@ function createStyles(isLightTheme: boolean) {
     lineHeight: 18,
   },
   homeHeroDismiss: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#26384b',
@@ -11044,23 +11288,6 @@ function createStyles(isLightTheme: boolean) {
     fontSize: 19,
     fontWeight: '700',
     lineHeight: 22,
-  },
-  homeHeroTitle: {
-    fontSize: 34,
-    fontWeight: '900',
-    letterSpacing: 3,
-    marginTop: 0,
-  },
-  homeHeroSubtitle: {
-    color: '#b8f5df',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  homeHeroDescription: {
-    color: '#aabdd7',
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 4,
   },
   lobbyHero: {
     marginBottom: 18,
@@ -13054,7 +13281,7 @@ function createStyles(isLightTheme: boolean) {
   },
   });
   const lightThemeOverrides = StyleSheet.create({
-        container: { backgroundColor: '#f8fafc' },
+        container: { backgroundColor: 'transparent' },
         startupLoadingScreen: { backgroundColor: '#f8fafc' },
         startupLoadingTitle: { color: '#0f172a' },
         startupLoadingMessage: { color: '#475569' },
@@ -13072,8 +13299,11 @@ function createStyles(isLightTheme: boolean) {
           shadowColor: '#64748b',
           shadowOpacity: 0.12,
         },
-        homeHeroPopup: { backgroundColor: '#ffffff', borderColor: '#cbd5e1', shadowOpacity: 0.16 },
-        homeHeroPopupDescription: { color: '#166534' },
+        homeHeroPopup: { backgroundColor: '#ffffff', borderColor: '#cbd5e1', shadowOpacity: 0.12 },
+        homeHeroLogoFrame: { backgroundColor: '#f1f5f9', borderColor: '#cbd5e1' },
+        homeHeroRoleBadge: { backgroundColor: '#e2e8f0' },
+        homeHeroRoleBadgeText: { color: '#334155' },
+        homeHeroTitle: { color: '#0f172a' },
         homeHeroEyebrowText: { color: '#92400e' },
         homeHeroDismiss: { backgroundColor: '#e2e8f0' },
         homeHeroDismissText: { color: '#334155' },

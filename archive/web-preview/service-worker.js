@@ -5,7 +5,7 @@ const PRECACHE_URLS = [
   './manifest.webmanifest',
   './style.css',
   './app.js',
-  './mobile/assets/logo-splash.png',
+  './assets/logo-splash.png',
   './assets/pwa/favicon-16.png',
   './assets/pwa/favicon-32.png',
   './assets/pwa/favicon-48.png',

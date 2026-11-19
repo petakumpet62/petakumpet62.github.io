@@ -10947,8 +10947,9 @@ function createStyles(isLightTheme: boolean) {
   homeHeroPopup: {
     position: 'absolute',
     top: 12,
-    left: 12,
-    right: 12,
+    alignSelf: 'center',
+    width: '92%',
+    maxWidth: 420,
     zIndex: 50,
     elevation: 8,
     flexDirection: 'row',

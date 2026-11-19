@@ -39,6 +39,13 @@ import { io, Socket } from 'socket.io-client';
 import { GameTimeline } from './GameTimeline';
 import { MapPanel } from './MapPanel';
 import type { MapPath, MapPoint } from './MapPanel.types';
+import {
+  createCompanionSpeechSegments,
+  findEnglishSpeechVoice,
+  getCompanionSpeechStyle,
+  type CompanionId,
+  type CompanionSpeechStyle,
+} from './companionSpeech';
 import { deviceLocationProvider } from './locationProvider';
 import type { LocationFix, LocationSubscription } from './locationProvider';
 import { getUwbAvailability } from './modules/petak-uwb';
@@ -46,6 +53,14 @@ import type { UwbAvailability } from './modules/petak-uwb';
 
 type Role = 'SEEKER' | 'HIDER' | 'IMPOSTOR';
 type Phase = 'LOBBY' | 'PREPARATION' | 'PLAYING' | 'FINISHED' | 'CANCELLED';
+type CompanionPage =
+  | 'home'
+  | 'profile'
+  | 'leaderboard'
+  | 'lobby'
+  | 'match'
+  | 'results'
+  | 'scanner';
 
 type CompanionSpeechRecognitionResult = ArrayLike<{ transcript: string }> & {
   isFinal: boolean;
@@ -235,9 +250,6 @@ const HIDER_MOVEMENT_GUIDANCE =
 const UNKNOWN_APPROACH_WARNING =
   `Hati-hati, peserta yang mendekat bisa jadi adalah Seeker. ${HIDER_MOVEMENT_GUIDANCE}`;
 
-const toIndonesianSpeech = (message: string) =>
-  message.replace(/\bSeeker\b/gi, 'pencari').replace(/\bHider\b/gi, 'penyembunyi');
-
 type SavedSession = {
   code: string;
   playerId: string;
@@ -349,8 +361,6 @@ type AvatarUnlockStatus = {
   requiredMissions: number;
 };
 
-type CompanionId = 'kanca' | 'tara' | 'komo' | 'cendi' | 'bako';
-
 type AccountResponse = {
   id: string;
   username: string;
@@ -392,6 +402,77 @@ type AccountSession = AccountResponse & {
 };
 
 type DeviceSpeechVoice = Awaited<ReturnType<typeof Speech.getAvailableVoicesAsync>>[number];
+
+type SpeechSequenceResult = 'done' | 'stopped' | 'error';
+
+function speakUtterance(
+  text: string,
+  language: string,
+  voiceId: string | null,
+  style: CompanionSpeechStyle
+): Promise<SpeechSequenceResult> {
+  return new Promise((resolve) => {
+    let isFinished = false;
+    const finish = (result: SpeechSequenceResult) => {
+      if (isFinished) return;
+      isFinished = true;
+      resolve(result);
+    };
+
+    try {
+      Speech.speak(text, {
+        language,
+        rate: style.rate,
+        pitch: style.pitch,
+        voice: voiceId ?? undefined,
+        onDone: () => finish('done'),
+        onStopped: () => finish('stopped'),
+        onError: () => finish('error'),
+      });
+    } catch {
+      finish('error');
+    }
+  });
+}
+
+async function speakCompanionSpeech(
+  message: string,
+  indonesianVoiceId: string | null,
+  englishVoice: DeviceSpeechVoice | null,
+  style: CompanionSpeechStyle = getCompanionSpeechStyle('kanca')
+) {
+  for (const segment of createCompanionSpeechSegments(message)) {
+    const useEnglishVoice = segment.language === 'en' && englishVoice !== null;
+    let result = await speakUtterance(
+      segment.language === 'en' && !useEnglishVoice
+        ? segment.fallbackText ?? segment.text
+        : segment.text,
+      useEnglishVoice ? englishVoice.language : 'id-ID',
+      useEnglishVoice ? englishVoice.identifier : indonesianVoiceId,
+      style
+    );
+    if (result === 'stopped') return;
+
+    if (result === 'error' && useEnglishVoice && segment.fallbackText) {
+      console.warn('Suara Inggris gagal; memakai pelafalan pendekatan untuk istilah Companion.');
+      result = await speakUtterance(segment.fallbackText, 'id-ID', indonesianVoiceId, style);
+      if (result === 'stopped') return;
+    }
+
+    if (result === 'error') {
+      throw new Error('TTS gagal membacakan salah satu bagian jawaban Companion.');
+    }
+  }
+}
+
+function enqueueSpeechTask(
+  queue: { current: Promise<void> },
+  task: () => Promise<void>
+) {
+  const nextTask = queue.current.catch(() => {}).then(task);
+  queue.current = nextTask;
+  return nextTask;
+}
 
 type LeaderboardPeriod = 'daily' | 'monthly';
 
@@ -1128,6 +1209,10 @@ function AppContent() {
   const previousThreatLevelRef = useRef<ProximityThreatLevel | null>(null);
   const soundEnabledRef = useRef(soundEnabled);
   const speechVoiceIdentifierRef = useRef<string | null>(selectedSpeechVoiceId);
+  const englishSpeechVoiceRef = useRef<DeviceSpeechVoice | null>(null);
+  const speechQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const featureLauncherIdle = useRef(new Animated.Value(0)).current;
+  const featureLauncherIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveActionPulse = useRef(new Animated.Value(0)).current;
   const startupLogoScale = useRef(new Animated.Value(0.92)).current;
   const startupLogoOpacity = useRef(new Animated.Value(0)).current;
@@ -1437,10 +1522,43 @@ function AppContent() {
   }, [soundEnabled]);
 
   useEffect(() => {
+    if (featureLauncherIdleTimerRef.current !== null) {
+      clearTimeout(featureLauncherIdleTimerRef.current);
+      featureLauncherIdleTimerRef.current = null;
+    }
+
+    featureLauncherIdle.stopAnimation();
+    Animated.timing(featureLauncherIdle, {
+      toValue: 0,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+
+    if (!isFeatureLauncherOpen) {
+      featureLauncherIdleTimerRef.current = setTimeout(() => {
+        featureLauncherIdleTimerRef.current = null;
+        Animated.timing(featureLauncherIdle, {
+          toValue: 1,
+          duration: 700,
+          useNativeDriver: true,
+        }).start();
+      }, 3_000);
+    }
+
+    return () => {
+      if (featureLauncherIdleTimerRef.current !== null) {
+        clearTimeout(featureLauncherIdleTimerRef.current);
+        featureLauncherIdleTimerRef.current = null;
+      }
+    };
+  }, [featureLauncherIdle, isFeatureLauncherOpen]);
+
+  useEffect(() => {
     let isCancelled = false;
     const accountId = account?.id;
     const storageKey = accountId ? `${SPEECH_VOICE_STORAGE_KEY}:${accountId}` : null;
     speechVoiceIdentifierRef.current = null;
+    englishSpeechVoiceRef.current = null;
     setSelectedSpeechVoiceId(null);
     setAvailableSpeechVoices([]);
     setSpeechVoiceError('');
@@ -1457,6 +1575,7 @@ function AppContent() {
       try {
         const voices = await Speech.getAvailableVoicesAsync();
         if (isCancelled) return;
+        englishSpeechVoiceRef.current = findEnglishSpeechVoice(voices);
         const indonesianVoices = voices
           .filter((voice) => /^id(?:[-_]|$)/i.test(voice.language))
           .sort((first, second) => first.name.localeCompare(second.name));
@@ -1941,18 +2060,18 @@ function AppContent() {
     }
 
     try {
-      Speech.speak(toIndonesianSpeech(message), {
-        language: 'id-ID',
-        rate: 0.92,
-        voice: speechVoiceIdentifierRef.current ?? undefined,
-        onDone: playAlertTone,
-        onError: (error) => {
-          console.error('Gagal menyuarakan peringatan permainan', error);
-          playAlertTone();
-        },
+      void enqueueSpeechTask(speechQueueRef, () =>
+        speakCompanionSpeech(
+          message,
+          speechVoiceIdentifierRef.current,
+          englishSpeechVoiceRef.current
+        )
+      ).then(playAlertTone).catch((error: unknown) => {
+        console.error('Gagal menyuarakan peringatan permainan', error);
+        playAlertTone();
       });
     } catch (error) {
-      console.error('Gagal memulai suara peringatan permainan', error);
+      console.error('Gagal memasukkan peringatan permainan ke antrean TTS', error);
       playAlertTone();
     }
   }, [attentionPlayer]);
@@ -1982,17 +2101,14 @@ function AppContent() {
     setIsSpeechVoicePreviewing(true);
     try {
       await Speech.stop();
-      Speech.speak('Ini contoh suara peringatan PETAK.', {
-        language: 'id-ID',
-        rate: 0.92,
-        voice: selectedSpeechVoiceId ?? undefined,
-        onDone: () => setIsSpeechVoicePreviewing(false),
-        onError: (error) => {
-          console.error('Gagal memutar pratinjau suara PETAK', error);
-          setSpeechVoiceError('Pratinjau suara gagal diputar pada perangkat ini.');
-          setIsSpeechVoicePreviewing(false);
-        },
-      });
+      await enqueueSpeechTask(speechQueueRef, () =>
+        speakCompanionSpeech(
+          'Ini contoh suara peringatan PETAK.',
+          selectedSpeechVoiceId,
+          englishSpeechVoiceRef.current
+        )
+      );
+      setIsSpeechVoicePreviewing(false);
     } catch (error) {
       console.error('Gagal memulai pratinjau suara PETAK', error);
       setSpeechVoiceError('Pratinjau suara gagal diputar pada perangkat ini.');
@@ -3234,7 +3350,7 @@ function AppContent() {
     setCompanionVoiceInterimTranscript('');
   };
 
-  const speakCompanionReply = async (reply: string) => {
+  const speakCompanionReply = async (reply: string, companionId: CompanionId) => {
     const shouldResumeListening = companionVoiceEnabledRef.current;
     if (shouldResumeListening) {
       companionVoiceTtsPausedRef.current = true;
@@ -3259,23 +3375,18 @@ function AppContent() {
           });
           finish();
         }, 90_000);
-        try {
-          Speech.speak(toIndonesianSpeech(reply), {
-            language: 'id-ID',
-            rate: 0.92,
-            voice: selectedSpeechVoiceId ?? undefined,
-            onDone: finish,
-            onStopped: finish,
-            onError: (error) => {
-              console.error('Gagal membacakan jawaban Companion', error);
-              setCompanionChatError('Jawaban tampil, tetapi TTS gagal diputar.');
-              finish();
-            },
-          });
-        } catch (error) {
+        void enqueueSpeechTask(speechQueueRef, () =>
+          speakCompanionSpeech(
+            reply,
+            selectedSpeechVoiceId,
+            englishSpeechVoiceRef.current,
+            getCompanionSpeechStyle(companionId)
+          )
+        ).then(finish).catch((error: unknown) => {
+          console.error('Gagal membacakan jawaban Companion', error);
+          setCompanionChatError('Jawaban tampil, tetapi TTS gagal diputar.');
           finish();
-          throw error;
-        }
+        });
       });
     } catch (error) {
       console.error('Gagal memulai TTS jawaban Companion', error);
@@ -3306,6 +3417,33 @@ function AppContent() {
         if (!queuedMessage || !requestAccount) break;
         setCompanionVoiceActiveMessage(queuedMessage);
 
+        const companionContext: {
+          page: CompanionPage;
+          period?: LeaderboardPeriod;
+          winner?: Role | null;
+          outcome?: 'won' | 'lost' | 'spectator' | null;
+        } = isProfileOpen || isCharacterSettingsOpen || profileCharacterPicker
+          ? { page: 'profile' }
+          : isLeaderboardOpen
+            ? { page: 'leaderboard', period: leaderboardPeriod }
+            : isScannerOpen
+              ? { page: 'scanner' }
+              : isLobbyDetailsOpen || room?.phase === 'LOBBY'
+                ? { page: 'lobby' }
+                : room?.phase === 'FINISHED'
+                  ? {
+                      page: 'results',
+                      winner: winningRole(room.winner),
+                      outcome: activePlayer?.isSpectator
+                        ? 'spectator'
+                        : activePlayer && resultRole
+                          ? activePlayerWon ? 'won' : 'lost'
+                          : null,
+                    }
+                  : room?.phase === 'PLAYING' || room?.phase === 'PREPARATION'
+                    ? { page: 'match' }
+                    : { page: 'home' };
+
         try {
           const response = await fetchWithTimeout(
             `${SOCKET_URL}/api/auth/companion/chat`,
@@ -3315,7 +3453,7 @@ function AppContent() {
                 Authorization: `Bearer ${requestAccount.token}`,
                 'Content-Type': 'application/json',
               },
-              body: JSON.stringify({ message: queuedMessage }),
+              body: JSON.stringify({ message: queuedMessage, context: companionContext }),
             },
             35_000
           );
@@ -3349,7 +3487,7 @@ function AppContent() {
           const reply = result.reply.trim();
           setCompanionChatReply(reply);
           setCompanionChatError('');
-          await speakCompanionReply(reply);
+          await speakCompanionReply(reply, requestAccount.companionId);
         } catch (error) {
           if (companionAccountRef.current?.token !== requestAccount.token) break;
           const errorMessage = error instanceof Error
@@ -4572,6 +4710,38 @@ function AppContent() {
             </View>
           )}
         />
+        {Platform.OS === 'web' && account && !isCompanionVoicePanelOpen &&
+        isCompanionVoicePositionLoaded ? (
+          <Animated.View
+            {...companionVoicePanResponder.panHandlers}
+            style={[
+              styles.companionVoiceDraggable,
+              companionVoicePosition.getLayout(),
+            ]}
+          >
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Buka chat AI Companion"
+              accessibilityHint="Ketuk untuk membuka; seret untuk memindahkan"
+              accessibilityState={{ expanded: false }}
+              style={styles.companionVoicePanelLauncher}
+              onPressIn={() => {
+                companionVoiceWasDraggedRef.current = false;
+              }}
+              onPress={() => {
+                if (companionVoiceWasDraggedRef.current) return;
+                const nextPosition = companionPanelPositionRef.current
+                  ? clampCompanionPanelPosition(companionPanelPositionRef.current)
+                  : getCompanionPanelPosition(companionVoicePositionRef.current);
+                companionPanelPositionRef.current = nextPosition;
+                setCompanionPanelPosition(nextPosition);
+                setIsCompanionVoicePanelOpen(true);
+              }}
+            >
+              <Text style={styles.companionVoiceLauncherIcon}>✦</Text>
+            </Pressable>
+          </Animated.View>
+        ) : null}
       </SafeAreaView>
     </Modal>
   );
@@ -4790,7 +4960,7 @@ function AppContent() {
             </View>
           </View>
         ) : null}
-        {!isCompanionVoicePanelOpen && isCompanionVoicePositionLoaded ? (
+        {!isCompanionVoicePanelOpen && !isLeaderboardOpen && isCompanionVoicePositionLoaded ? (
           <Animated.View
             {...companionVoicePanResponder.panHandlers}
             style={[
@@ -4824,6 +4994,18 @@ function AppContent() {
       </View>
     ) : null
   );
+  const companionVoiceModal = isLeaderboardOpen && isCompanionVoicePanelOpen ? (
+    <Modal
+      visible={isLeaderboardOpen && isCompanionVoicePanelOpen}
+      transparent
+      animationType="fade"
+      onRequestClose={closeCompanionVoicePanel}
+    >
+      <View pointerEvents="box-none" style={styles.companionVoiceModalContainer}>
+        {companionVoiceControl}
+      </View>
+    </Modal>
+  ) : null;
 
   const profileModal = (
     <Modal
@@ -5448,7 +5630,7 @@ function AppContent() {
               <Text style={styles.profileSectionMeta}>TEXT-TO-SPEECH</Text>
             </View>
             <Text style={styles.profileSpeechHint}>
-              Pilih suara bahasa Indonesia yang tersedia di perangkat, lalu dengarkan contoh. Preferensi disimpan per akun di perangkat ini.
+              Pilih suara bahasa Indonesia yang tersedia di perangkat. Istilah game berbahasa Inggris memakai suara Inggris bila tersedia; jika tidak, digunakan pelafalan pendekatan. Preferensi suara Indonesia disimpan per akun di perangkat ini.
             </Text>
             {isSpeechVoiceLoading ? (
               <View style={styles.profileSpeechLoading}>
@@ -8184,6 +8366,7 @@ function AppContent() {
       {lobbyDetailsModal}
       {proximityCaughtModal}
       {leaderboardModal}
+      {companionVoiceModal}
       {profileModal}
       {gameTimelineModal}
       {isLiveMapScreen ? renderLiveMapScreen() : <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -8477,26 +8660,51 @@ function AppContent() {
               </Pressable>
             </>
           ) : null}
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={isFeatureLauncherOpen ? 'Tutup menu fitur' : 'Buka menu fitur'}
-            accessibilityState={{ expanded: isFeatureLauncherOpen }}
-            style={styles.featureLauncherButton}
-            onPress={() => setIsFeatureLauncherOpen((open) => !open)}
+          <Animated.View
+            style={{
+              opacity: featureLauncherIdle.interpolate({
+                inputRange: [0, 1],
+                outputRange: [1, 0.62],
+              }),
+              transform: [{
+                scale: featureLauncherIdle.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [1, 0.78],
+                }),
+              }],
+            }}
           >
-            {isFeatureLauncherOpen ? (
-              <Text style={styles.featureLauncherButtonText}>×</Text>
-            ) : (
-              <Image
-                source={require('./assets/logo-launcher.png')}
-                resizeMode="contain"
-                style={styles.featureLauncherLogo}
-              />
-            )}
-          </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={isFeatureLauncherOpen ? 'Tutup menu fitur' : 'Buka menu fitur'}
+              accessibilityHint="Tombol mengecil saat tidak digunakan. Ketuk untuk membuka menu fitur."
+              accessibilityState={{ expanded: isFeatureLauncherOpen }}
+              hitSlop={12}
+              style={styles.featureLauncherButton}
+              onPressIn={() => {
+                if (featureLauncherIdleTimerRef.current !== null) {
+                  clearTimeout(featureLauncherIdleTimerRef.current);
+                  featureLauncherIdleTimerRef.current = null;
+                }
+                featureLauncherIdle.stopAnimation();
+                featureLauncherIdle.setValue(0);
+              }}
+              onPress={() => setIsFeatureLauncherOpen((open) => !open)}
+            >
+              {isFeatureLauncherOpen ? (
+                <Text style={styles.featureLauncherButtonText}>×</Text>
+              ) : (
+                <Image
+                  source={require('./assets/logo-launcher.png')}
+                  resizeMode="contain"
+                  style={styles.featureLauncherLogo}
+                />
+              )}
+            </Pressable>
+          </Animated.View>
         </View>
       ) : null}
-      {companionVoiceControl}
+      {!isLeaderboardOpen ? companionVoiceControl : null}
     </SafeAreaView>
   );
 }
@@ -9676,6 +9884,9 @@ function createStyles(isLightTheme: boolean) {
     paddingBottom: 22,
     zIndex: 10000,
     elevation: 10000,
+  },
+  companionVoiceModalContainer: {
+    flex: 1,
   },
   companionVoiceDraggable: {
     position: 'absolute',

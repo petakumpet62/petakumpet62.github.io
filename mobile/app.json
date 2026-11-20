@@ -23,6 +23,7 @@
     "android": {
       "edgeToEdgeEnabled": true,
       "softwareKeyboardLayoutMode": "resize",
+      "backgroundColor": "#0c111b",
       "adaptiveIcon": {
         "backgroundColor": "#0c111b",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -82,6 +83,21 @@
           "androidSpeechServicePackages": [
             "com.google.android.googlequicksearchbox"
           ]
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0c111b",
+          "image": "./assets/logo-splash.png",
+          "resizeMode": "contain"
+        }
+      ],
+      [
+        "expo-status-bar",
+        {
+          "hidden": true,
+          "style": "light"
         }
       ]
     ]

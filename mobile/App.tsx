@@ -25,12 +25,15 @@ import {
   FlatList,
   Image,
   type ImageSourcePropType,
+  Keyboard,
+  KeyboardAvoidingView,
   Modal,
   PanResponder,
   Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
+  type ScrollViewInstance,
   Share,
   StyleSheet,
   Text,
@@ -972,6 +975,8 @@ function AppContent() {
   const [roleRevealDismissedRoundId, setRoleRevealDismissedRoundId] = useState<string | null>(null);
   const [isGettingStartedVisible, setIsGettingStartedVisible] = useState(false);
   const [isGuideLabelVisible, setIsGuideLabelVisible] = useState(false);
+  const mainPageScrollRef = useRef<ScrollViewInstance | null>(null);
+  const shouldScrollToJoinActionsRef = useRef(false);
   const [connectionStatus, setConnectionStatus] = useState<
     'connecting' | 'connected' | 'reconnecting' | 'disconnected'
   >('connecting');
@@ -2196,17 +2201,35 @@ function AppContent() {
       headers: { Authorization: `Bearer ${account.token}` },
     })
       .then(async (response) => {
-        const result = await response.json() as {
-          error?: string;
-          minimumGames?: number;
-          entries?: LeaderboardEntry[];
+        const responseBody = await response.text();
+        let result: {
+          error?: unknown;
+          minimumGames?: unknown;
+          entries?: unknown;
         };
+        try {
+          const parsed: unknown = JSON.parse(responseBody);
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            throw new Error('Invalid leaderboard response.');
+          }
+          result = parsed as typeof result;
+        } catch {
+          throw new Error(
+            response.status === 404
+              ? 'Leaderboard belum tersedia pada server ini.'
+              : `Server mengirim respons leaderboard kosong atau tidak valid (HTTP ${response.status}). Coba lagi.`
+          );
+        }
         if (!response.ok || !Array.isArray(result.entries)) {
-          throw new Error(result.error || 'Leaderboard belum dapat dimuat.');
+          throw new Error(
+            typeof result.error === 'string'
+              ? result.error
+              : 'Leaderboard belum dapat dimuat.'
+          );
         }
         if (isCancelled) return;
-        setLeaderboardEntries(result.entries);
-        if (typeof result.minimumGames === 'number' && Number.isInteger(result.minimumGames)) {
+        setLeaderboardEntries(result.entries as LeaderboardEntry[]);
+        if (typeof result.minimumGames === 'number' && Number.isSafeInteger(result.minimumGames)) {
           setLeaderboardMinimumGames(result.minimumGames);
         }
       })
@@ -3147,6 +3170,22 @@ function AppContent() {
       isCancelled = true;
     };
   }, [account?.id, room?.code, room?.phase, showAppAlert]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+
+    const keyboardShowSubscription = Keyboard.addListener('keyboardDidShow', () => {
+      if (!shouldScrollToJoinActionsRef.current) return;
+      shouldScrollToJoinActionsRef.current = false;
+      requestAnimationFrame(() => {
+        mainPageScrollRef.current?.scrollToEnd({ animated: true });
+      });
+    });
+
+    return () => {
+      keyboardShowSubscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (!account || room?.code || isScannerOpen) {
@@ -7185,7 +7224,10 @@ function AppContent() {
       <TextInput
         value={authUsername}
         onChangeText={setAuthUsername}
-        style={[styles.input, styles.authInput]}
+        style={[styles.input, styles.authInput, Platform.OS === 'web' && styles.webTextInput]}
+        onFocus={() => {
+          if (isHomeHeroVisible) hideHomeHero();
+        }}
         autoCapitalize="none"
         autoCorrect={false}
         maxLength={30}
@@ -7204,7 +7246,10 @@ function AppContent() {
       <TextInput
         value={authPassword}
         onChangeText={setAuthPassword}
-        style={[styles.input, styles.authInput]}
+        style={[styles.input, styles.authInput, Platform.OS === 'web' && styles.webTextInput]}
+        onFocus={() => {
+          if (isHomeHeroVisible) hideHomeHero();
+        }}
         secureTextEntry
         maxLength={128}
         placeholder="Minimal 8 karakter"
@@ -8085,7 +8130,7 @@ function AppContent() {
               placeholder="Cari nama, role, status, atau misi"
               placeholderTextColor={isLightTheme ? '#64748b' : '#7f9bb5'}
               returnKeyType="search"
-              style={styles.resultSearchInput}
+              style={[styles.resultSearchInput, Platform.OS === 'web' && styles.webTextInput]}
               value={resultPlayerSearch}
               onChangeText={setResultPlayerSearch}
             />
@@ -8291,7 +8336,7 @@ function AppContent() {
                         placeholder="Nama landmark yang benar"
                         placeholderTextColor={isLightTheme ? '#64748b' : '#9db0c4'}
                         returnKeyType="done"
-                        style={styles.input}
+                        style={[styles.input, Platform.OS === 'web' && styles.webTextInput]}
                         value={
                           landmarkSubmissionNames[target.id] ??
                           submission?.submittedName ??
@@ -9132,7 +9177,11 @@ function AppContent() {
   if (isStartupLoading) {
     return (
       <SafeAreaView style={styles.startupLoadingScreen}>
-        <StatusBar hidden animated style={isLightTheme ? 'dark' : 'light'} />
+        <StatusBar
+          hidden
+          animated={Platform.OS !== 'android'}
+          style={isLightTheme ? 'dark' : 'light'}
+        />
         <View style={styles.startupLoadingContent}>
           <Animated.Image
             accessibilityLabel="Logo PETAK"
@@ -9158,13 +9207,18 @@ function AppContent() {
   }
 
   return (
-    <SafeAreaView
+    <View
       style={[
         styles.container,
         { backgroundColor: screenBackgroundColor },
       ]}
     >
-      <StatusBar hidden animated style={isLightTheme ? 'dark' : 'light'} />
+    <SafeAreaView style={styles.container}>
+      <StatusBar
+        hidden
+        animated={Platform.OS !== 'android'}
+        style={isLightTheme ? 'dark' : 'light'}
+      />
       {!isHiderThreatMode && isLiveMapScreen ? (
         <LinearGradient
           pointerEvents="none"
@@ -9189,17 +9243,26 @@ function AppContent() {
       {companionVoiceModal}
       {profileModal}
       {gameTimelineModal}
-      {isLiveMapScreen ? renderLiveMapScreen() : <ScrollView contentContainerStyle={styles.scrollContent}>
+      {isLiveMapScreen ? renderLiveMapScreen() : (
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'web' ? undefined : 'padding'}
+          style={styles.keyboardAvoidingContainer}
+        >
+          <ScrollView
+            ref={mainPageScrollRef}
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            onScrollBeginDrag={() => {
+              if (isAuthScreen && isHomeHeroVisible) hideHomeHero();
+            }}
+          >
         {isAuthScreen && isHomeHeroVisible && !room && !isScannerOpen ? (
           <Animated.View
-            accessibilityLabel={
-              isAuthScreen
-                ? 'Masuk ke PETAK, game sembunyi-sembunyi'
-                : 'Selamat datang di PETAK, sesi multipemain'
-            }
+            accessibilityLabel="Masuk ke PETAK, game sembunyi-sembunyi"
             style={[
               styles.homeHeroPopup,
-              isAuthScreen && styles.authHeroPopup,
+              styles.authHeroPopup,
               {
                 opacity: homeHeroOpacity,
                 transform: [{ translateY: homeHeroOpacity.interpolate({ inputRange: [0, 1], outputRange: [-12, 0] }) }],
@@ -9512,10 +9575,17 @@ function AppContent() {
                 accessibilityLabel="Kode room"
                 value={joinCode}
                 onChangeText={setJoinCode}
-                style={[styles.input, styles.joinRoomInput]}
+                style={[
+                  styles.input,
+                  styles.joinRoomInput,
+                  Platform.OS === 'web' && styles.webTextInput,
+                ]}
                 placeholder="Kode room"
                 autoCapitalize="characters"
                 placeholderTextColor={isLightTheme ? '#64748b' : '#9db0c4'}
+                onFocus={() => {
+                  shouldScrollToJoinActionsRef.current = true;
+                }}
               />
               <Pressable
                 accessibilityRole="button"
@@ -9640,7 +9710,9 @@ function AppContent() {
         ) : (
           renderGame()
         )}
-      </ScrollView>}
+          </ScrollView>
+        </KeyboardAvoidingView>
+      )}
       {account && !isLiveMapScreen && !isScannerOpen ? (
         <View pointerEvents="box-none" style={styles.featureLauncherContainer}>
           {isFeatureLauncherOpen ? (
@@ -9717,6 +9789,7 @@ function AppContent() {
       ) : null}
       {!isLeaderboardOpen ? companionVoiceControl : null}
     </SafeAreaView>
+    </View>
   );
 }
 
@@ -9725,6 +9798,9 @@ function createStyles(isLightTheme: boolean) {
   container: {
     flex: 1,
     backgroundColor: 'transparent',
+  },
+  keyboardAvoidingContainer: {
+    flex: 1,
   },
   pageBackdropRing: {
     position: 'absolute',
@@ -12693,6 +12769,9 @@ function createStyles(isLightTheme: boolean) {
     paddingHorizontal: 14,
     paddingVertical: 12,
     marginBottom: 16,
+  },
+  webTextInput: {
+    fontSize: 16,
   },
   joinRoomRow: {
     flexDirection: 'row',

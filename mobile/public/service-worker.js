@@ -1,6 +1,6 @@
 const CACHE_PREFIX = 'petak-pwa-';
 // Increment this version when the app shell or PWA assets change.
-const CACHE_NAME = `${CACHE_PREFIX}v4`;
+const CACHE_NAME = `${CACHE_PREFIX}v5`;
 const APP_ROOT_URL = new URL('./', self.registration.scope).href;
 const PRECACHE_URLS = [
   APP_ROOT_URL,
@@ -45,6 +45,74 @@ self.addEventListener('activate', (event) => {
         .map((cacheName) => caches.delete(cacheName))
     );
     await self.clients.claim();
+  })());
+});
+
+self.addEventListener('push', (event) => {
+  event.waitUntil((async () => {
+    let payload = {};
+    if (event.data) {
+      try {
+        const parsed = event.data.json();
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          payload = parsed;
+        } else {
+          console.error('Payload push PETAK harus berupa objek JSON.');
+        }
+      } catch (error) {
+        console.error('Payload push PETAK tidak valid.', error);
+      }
+    }
+
+    const title = typeof payload.title === 'string' && payload.title.trim()
+      ? payload.title.trim().slice(0, 80)
+      : 'PETAK UMPET +62';
+    const body = typeof payload.body === 'string' ? payload.body.trim().slice(0, 180) : '';
+    let targetUrl = APP_ROOT_URL;
+    if (typeof payload.url === 'string') {
+      try {
+        const candidate = new URL(payload.url, self.location.origin);
+        if (candidate.origin === self.location.origin) targetUrl = candidate.href;
+      } catch (error) {
+        console.error('Tautan notifikasi push PETAK tidak valid.', error);
+      }
+    }
+
+    await self.registration.showNotification(title, {
+      body,
+      icon: new URL('icons/icon-192.png', self.registration.scope).href,
+      badge: new URL('icons/maskable-192.png', self.registration.scope).href,
+      tag: typeof payload.tag === 'string' ? payload.tag.slice(0, 120) : 'petak-notification',
+      data: { url: targetUrl },
+      renotify: false,
+    });
+  })());
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const requestedUrl = event.notification.data?.url;
+    let targetUrl = APP_ROOT_URL;
+    if (typeof requestedUrl === 'string') {
+      try {
+        const candidate = new URL(requestedUrl);
+        if (candidate.origin === self.location.origin) targetUrl = candidate.href;
+      } catch (error) {
+        console.error('Tautan klik notifikasi PETAK tidak valid.', error);
+      }
+    }
+
+    const windowClients = await self.clients.matchAll({
+      type: 'window',
+      includeUncontrolled: true,
+    });
+    for (const client of windowClients) {
+      if (new URL(client.url).origin !== self.location.origin) continue;
+      if (client.url !== targetUrl && 'navigate' in client) await client.navigate(targetUrl);
+      return client.focus();
+    }
+    return self.clients.openWindow(targetUrl);
   })());
 });
 

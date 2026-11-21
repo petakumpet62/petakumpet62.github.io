@@ -77,3 +77,34 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Notify PETAK push subscribers about deployment
+        env:
+          BACKEND_URL: ${{ vars.EXPO_PUBLIC_SOCKET_URL }}
+          PUSH_ADMIN_TOKEN: ${{ secrets.PETAK_PUSH_ADMIN_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$PUSH_ADMIN_TOKEN" ]; then
+            echo "::warning::Set PETAK_PUSH_ADMIN_TOKEN to enable deployment push notifications."
+            exit 0
+          fi
+          node --input-type=module <<'NODE'
+          const backendUrl = process.env.BACKEND_URL.replace(/\/+$/, '');
+          const response = await fetch(`${backendUrl}/api/admin/push/deployment`, {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${process.env.PUSH_ADMIN_TOKEN}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              deploymentId: `${process.env.GITHUB_REPOSITORY}:${process.env.GITHUB_SHA}`,
+              version: process.env.GITHUB_SHA.slice(0, 7),
+            }),
+          });
+          if (!response.ok) {
+            throw new Error(`Backend rejected the deployment push (${response.status}).`);
+          }
+          const result = await response.json();
+          console.log(`Deployment notification completed; ${result.delivered} device(s) reached.`);
+          NODE

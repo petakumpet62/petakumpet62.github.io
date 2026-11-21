@@ -19,6 +19,7 @@ import Svg, { Path } from 'react-native-svg';
 import { Asset } from 'expo-asset';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
   AppState,
   Animated,
@@ -326,6 +327,7 @@ const SOCKET_URL = (
 const SESSION_STORAGE_KEY = 'petak.active-session';
 const ACCOUNT_STORAGE_KEY = 'petak.account-session';
 const THEME_PREFERENCE_STORAGE_KEY = 'petak.theme-preference';
+const BACKGROUND_MUSIC_PREFERENCE_STORAGE_KEY = 'petak.background-music-preference';
 const COMPANION_VOICE_POSITION_STORAGE_KEY = 'petak.companion-voice-position';
 const BROADCAST_INTRO_STORAGE_KEY = 'petak.broadcast-intro-seen';
 const GETTING_STARTED_STORAGE_KEY = 'petak.getting-started-seen';
@@ -340,6 +342,9 @@ const LOCATION_FUTURE_TIMESTAMP_TOLERANCE_MS = 5_000;
 const LOCATION_RETRY_BASE_MS = 1_000;
 const LOCATION_RETRY_MAX_MS = 30_000;
 const STARTUP_LOADER_MINIMUM_MS = 450;
+const STARTUP_HERO_DELAY_MS = 500;
+const CONNECTION_ISSUE_DELAY_MS = 2_000;
+const LANDMARK_TARGET_TIMEOUT_MS = 15_000;
 const SEEKER_SCAN_MARKER_DURATION_MS = 15_000;
 const HIDER_MOVEMENT_GUIDANCE =
   'Jika ada peserta yang mendekat, menjauhlah sambil tetap berada di dalam zona permainan.';
@@ -467,6 +472,7 @@ type AccountResponse = {
   broadcastCredits: number;
   broadcastNextFreeAt: number;
   scanCredits: number;
+  dailyRewardGranted?: boolean;
   avatarProgress?: {
     wins: number;
     missionsByRole: Record<'hider' | 'seeker' | 'impostor', number>;
@@ -474,6 +480,37 @@ type AccountResponse = {
   avatarUnlocks?: Record<string, AvatarUnlockStatus>;
   token?: string;
 };
+
+type PushPreferences = {
+  dailyLogin: boolean;
+  leaderboard: boolean;
+  featureUpdates: boolean;
+};
+
+type PushSettingsResponse = {
+  configured: boolean;
+  publicKey: string;
+  dailyRewardEnabled: boolean;
+  subscribed: boolean;
+  preferences: PushPreferences;
+  timeZone: string;
+};
+
+const DEFAULT_PUSH_PREFERENCES: PushPreferences = {
+  dailyLogin: false,
+  leaderboard: false,
+  featureUpdates: false,
+};
+
+function getLocalTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
+function decodePushApplicationServerKey(value: string) {
+  const padding = '='.repeat((4 - (value.length % 4)) % 4);
+  const base64 = `${value}${padding}`.replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(window.atob(base64), (character) => character.charCodeAt(0));
+}
 
 type ReferralProgress = {
   invitedCount: number;
@@ -764,9 +801,14 @@ export default function App() {
 function AppContent() {
   const insets = useSafeAreaInsets();
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
+  const authHeroVisualScale = Math.min(
+    1,
+    Math.max(0, (viewportWidth - insets.left - insets.right - 80) / 268)
+  );
   const systemColorScheme = useColorScheme();
   const [themePreference, setThemePreference] = useState<ThemePreference>('dark');
   const [isThemePreferenceLoading, setIsThemePreferenceLoading] = useState(true);
+  const [reduceMotionEnabled, setReduceMotionEnabled] = useState(false);
   const isLightTheme =
     themePreference === 'light' ||
     (themePreference === 'system' && systemColorScheme === 'light');
@@ -791,6 +833,7 @@ function AppContent() {
   companionAccountRef.current = account;
   const [isAccountLoading, setIsAccountLoading] = useState(true);
   const isStartupLoading = isAccountLoading || isThemePreferenceLoading;
+  const [isStartupHeroVisible, setIsStartupHeroVisible] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [referrerAccountId] = useState(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return '';
@@ -803,6 +846,10 @@ function AppContent() {
   const [appAlert, setAppAlert] = useState<AppAlert | null>(null);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [pushSettings, setPushSettings] = useState<PushSettingsResponse | null>(null);
+  const [isLoadingPushSettings, setIsLoadingPushSettings] = useState(false);
+  const [isSavingPushSettings, setIsSavingPushSettings] = useState(false);
+  const [pushSettingsError, setPushSettingsError] = useState('');
   const [isSavingAvatar, setIsSavingAvatar] = useState(false);
   const [profileAvatarError, setProfileAvatarError] = useState('');
   const [isSavingCompanion, setIsSavingCompanion] = useState(false);
@@ -867,6 +914,10 @@ function AppContent() {
     companionVoiceInterimTranscript || companionVoiceDraft || companionVoiceActiveMessage
   );
   useEffect(() => {
+    if (reduceMotionEnabled) {
+      companionVoiceSoundBars.forEach((bar) => bar.setValue(0.55));
+      return;
+    }
     if (!isCompanionVoiceProcessing) {
       companionVoiceSoundBars.forEach((bar) => bar.setValue(0.2));
       return;
@@ -891,7 +942,7 @@ function AppContent() {
     );
     animations.forEach((animation) => animation.start());
     return () => animations.forEach((animation) => animation.stop());
-  }, [companionVoiceSoundBars, isCompanionVoiceProcessing]);
+  }, [companionVoiceSoundBars, isCompanionVoiceProcessing, reduceMotionEnabled]);
   const clampCompanionVoicePosition = useCallback(
     (position: { x: number; y: number }) => {
       const minX = 12 + insets.left;
@@ -980,10 +1031,13 @@ function AppContent() {
   const [connectionStatus, setConnectionStatus] = useState<
     'connecting' | 'connected' | 'reconnecting' | 'disconnected'
   >('connecting');
+  const [showConnectionRecovery, setShowConnectionRecovery] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [hasScanned, setHasScanned] = useState(false);
   const [scanError, setScanError] = useState('');
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [backgroundMusicEnabled, setBackgroundMusicEnabled] = useState(true);
+  const backgroundMusicPreferenceChangedRef = useRef(false);
   const [isHomeHeroVisible, setIsHomeHeroVisible] = useState(true);
   const [homeHeroCompanionId, setHomeHeroCompanionId] = useState<CompanionId>(
     getRandomHomeHeroCompanion
@@ -1024,6 +1078,7 @@ function AppContent() {
   >(null);
   const [isLoadingLandmarkTargets, setIsLoadingLandmarkTargets] = useState(false);
   const [landmarkTargetError, setLandmarkTargetError] = useState('');
+  const landmarkTargetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [landmarkSubmissionStatuses, setLandmarkSubmissionStatuses] = useState<
     Record<string, LandmarkSubmissionStatus>
   >({});
@@ -1064,6 +1119,20 @@ function AppContent() {
     },
     [showAppAlert]
   );
+  const toggleBackgroundMusic = useCallback(() => {
+    const nextEnabled = !backgroundMusicEnabled;
+    backgroundMusicPreferenceChangedRef.current = true;
+    setBackgroundMusicEnabled(nextEnabled);
+    void AsyncStorage.setItem(
+      BACKGROUND_MUSIC_PREFERENCE_STORAGE_KEY,
+      String(nextEnabled)
+    ).catch((error: unknown) => {
+      console.error('Gagal menyimpan preferensi musik latar PETAK', error);
+      showAppAlert(
+        'Preferensi musik latar gagal disimpan. Pengaturan ini hanya berlaku sampai aplikasi ditutup.'
+      );
+    });
+  }, [backgroundMusicEnabled, showAppAlert]);
   const renderThemePreferenceControl = () => (
     <View style={styles.themePreferenceSection}>
       <Text style={styles.themePreferenceTitle}>Tema permainan</Text>
@@ -1251,6 +1320,34 @@ function AppContent() {
       isCancelled = true;
     };
   }, [showAppAlert]);
+
+  useEffect(() => {
+    let isCancelled = false;
+    void AsyncStorage.getItem(BACKGROUND_MUSIC_PREFERENCE_STORAGE_KEY)
+      .then((savedPreference) => {
+        if (
+          isCancelled ||
+          backgroundMusicPreferenceChangedRef.current ||
+          savedPreference === null
+        ) return;
+        if (savedPreference === 'true' || savedPreference === 'false') {
+          setBackgroundMusicEnabled(savedPreference === 'true');
+          return;
+        }
+        console.warn('Preferensi musik latar PETAK tidak dikenal; musik latar tetap aktif.');
+      })
+      .catch((error: unknown) => {
+        console.error('Gagal memuat preferensi musik latar PETAK', error);
+        if (!isCancelled) {
+          showAppAlert(
+            'Preferensi musik latar gagal dimuat. Musik latar tetap aktif untuk sesi ini.'
+          );
+        }
+      });
+    return () => {
+      isCancelled = true;
+    };
+  }, [showAppAlert]);
   const checkUwbSupport = async () => {
     setIsCheckingUwbAvailability(true);
     try {
@@ -1377,6 +1474,7 @@ function AppContent() {
   const liveActionPulse = useRef(new Animated.Value(0)).current;
   const startupLogoScale = useRef(new Animated.Value(0.92)).current;
   const startupLogoOpacity = useRef(new Animated.Value(0)).current;
+  const startupCharacterFloat = useRef(new Animated.Value(0)).current;
   const proximityExplosionScale = useRef(new Animated.Value(0.45)).current;
   const proximityExplosionOpacity = useRef(new Animated.Value(0)).current;
   const broadcastChunksRef = useRef<Float32Array[]>([]);
@@ -1439,6 +1537,11 @@ function AppContent() {
     onBuffer: onMicrophoneBuffer,
   });
   const hideHomeHero = useCallback(() => {
+    if (reduceMotionEnabled) {
+      homeHeroOpacity.setValue(0);
+      setIsHomeHeroVisible(false);
+      return;
+    }
     Animated.timing(homeHeroOpacity, {
       toValue: 0,
       duration: 220,
@@ -1446,7 +1549,7 @@ function AppContent() {
     }).start(({ finished }) => {
       if (finished) setIsHomeHeroVisible(false);
     });
-  }, [homeHeroOpacity]);
+  }, [homeHeroOpacity, reduceMotionEnabled]);
 
   useEffect(() => {
     if (isAuthScreen && !authScreenWasVisibleRef.current) {
@@ -1459,7 +1562,7 @@ function AppContent() {
   }, [homeHeroOpacity, isAuthScreen]);
 
   useEffect(() => {
-    if (!isAuthScreen || !isHomeHeroVisible) {
+    if (!isAuthScreen || !isHomeHeroVisible || reduceMotionEnabled) {
       authCharacterFloat.stopAnimation();
       authCharacterBlink.stopAnimation();
       authCharacterFloat.setValue(0);
@@ -1507,14 +1610,51 @@ function AppContent() {
       floatAnimation.stop();
       blinkAnimation?.stop();
     };
-  }, [authCharacterBlink, authCharacterFloat, isAuthScreen, isHomeHeroVisible]);
+  }, [
+    authCharacterBlink,
+    authCharacterFloat,
+    isAuthScreen,
+    isHomeHeroVisible,
+    reduceMotionEnabled,
+  ]);
 
   const activePlayer = useMemo(() => {
     if (!room?.selfPlayerId) return null;
     return room.players.find((player) => player.id === room.selfPlayerId) ?? null;
   }, [room]);
+  const requestLandmarkTargets = useCallback(() => {
+    const socket = socketRef.current;
+    if (!room || !socket?.connected) return;
+
+    landmarkTargetRequestKeyRef.current = `${room.code}:${room.roundId}`;
+    if (landmarkTargetTimeoutRef.current) clearTimeout(landmarkTargetTimeoutRef.current);
+    setIsLoadingLandmarkTargets(true);
+    setLandmarkTargetError('');
+    landmarkTargetTimeoutRef.current = setTimeout(() => {
+      landmarkTargetTimeoutRef.current = null;
+      landmarkTargetRequestKeyRef.current = null;
+      setIsLoadingLandmarkTargets(false);
+      setLandmarkTargetError('Permintaan landmark terlalu lama. Periksa koneksi lalu coba lagi.');
+    }, LANDMARK_TARGET_TIMEOUT_MS);
+    socket.emit('landmark:request-targets');
+  }, [room?.code, room?.roundId]);
+
+  useEffect(
+    () => () => {
+      if (landmarkTargetTimeoutRef.current) {
+        clearTimeout(landmarkTargetTimeoutRef.current);
+        landmarkTargetTimeoutRef.current = null;
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     if (room?.phase !== 'PLAYING' || !activePlayer || activePlayer.isSpectator) {
+      liveActionPulse.setValue(0);
+      return;
+    }
+    if (reduceMotionEnabled) {
       liveActionPulse.setValue(0);
       return;
     }
@@ -1535,7 +1675,13 @@ function AppContent() {
     );
     pulse.start();
     return () => pulse.stop();
-  }, [activePlayer?.id, activePlayer?.isSpectator, liveActionPulse, room?.phase]);
+  }, [
+    activePlayer?.id,
+    activePlayer?.isSpectator,
+    liveActionPulse,
+    reduceMotionEnabled,
+    room?.phase,
+  ]);
   useEffect(() => {
     if (
       room?.phase !== 'PLAYING' ||
@@ -1763,7 +1909,10 @@ function AppContent() {
           end={{ x: 0.14, y: 1 }}
           style={StyleSheet.absoluteFill}
         />
-        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, styles.pageBackdropDecorations]}
+        >
           <View
             style={[
               styles.pageBackdropRing,
@@ -1800,6 +1949,10 @@ function AppContent() {
     }
 
     featureLauncherIdle.stopAnimation();
+    if (reduceMotionEnabled) {
+      featureLauncherIdle.setValue(0);
+      return;
+    }
     Animated.timing(featureLauncherIdle, {
       toValue: 0,
       duration: 180,
@@ -1823,7 +1976,7 @@ function AppContent() {
         featureLauncherIdleTimerRef.current = null;
       }
     };
-  }, [featureLauncherIdle, isFeatureLauncherOpen]);
+  }, [featureLauncherIdle, isFeatureLauncherOpen, reduceMotionEnabled]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1945,7 +2098,22 @@ function AppContent() {
   }, [account?.token, isInviteFriendsOpen, referralProgressRefreshKey, room?.phase, room?.roundId]);
 
   useEffect(() => {
-    if (!isStartupLoading) return;
+    if (!isStartupLoading) {
+      setIsStartupHeroVisible(false);
+      return;
+    }
+
+    const timer = setTimeout(() => setIsStartupHeroVisible(true), STARTUP_HERO_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [isStartupLoading]);
+
+  useEffect(() => {
+    if (!isStartupHeroVisible) return;
+    if (reduceMotionEnabled) {
+      startupLogoOpacity.setValue(1);
+      startupLogoScale.setValue(1);
+      return;
+    }
 
     const entrance = Animated.parallel([
       Animated.timing(startupLogoOpacity, {
@@ -1984,7 +2152,56 @@ function AppContent() {
       entrance.stop();
       pulse?.stop();
     };
-  }, [isStartupLoading, startupLogoOpacity, startupLogoScale]);
+  }, [
+    isStartupHeroVisible,
+    reduceMotionEnabled,
+    startupLogoOpacity,
+    startupLogoScale,
+  ]);
+
+  useEffect(() => {
+    if (!isStartupHeroVisible || reduceMotionEnabled) {
+      startupCharacterFloat.stopAnimation();
+      startupCharacterFloat.setValue(0);
+      return;
+    }
+
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(startupCharacterFloat, {
+          toValue: 1,
+          duration: 1_100,
+          useNativeDriver: true,
+        }),
+        Animated.timing(startupCharacterFloat, {
+          toValue: 0,
+          duration: 1_100,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [isStartupHeroVisible, reduceMotionEnabled, startupCharacterFloat]);
+
+  useEffect(() => {
+    let isCancelled = false;
+    const subscription = AccessibilityInfo.addEventListener(
+      'reduceMotionChanged',
+      setReduceMotionEnabled
+    );
+    void AccessibilityInfo.isReduceMotionEnabled()
+      .then((enabled) => {
+        if (!isCancelled) setReduceMotionEnabled(enabled);
+      })
+      .catch((error: unknown) => {
+        console.warn('Gagal memeriksa preferensi pengurangan animasi.', error);
+      });
+    return () => {
+      isCancelled = true;
+      subscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     let isCancelled = false;
@@ -2024,7 +2241,10 @@ function AppContent() {
         };
         if (!isCancelled) setAccount(cachedAccount);
         const response = await fetchWithTimeout(`${SOCKET_URL}/api/auth/me`, {
-          headers: { Authorization: `Bearer ${cachedAccount.token}` },
+          headers: {
+            Authorization: `Bearer ${cachedAccount.token}`,
+            'X-Petak-Timezone': getLocalTimeZone(),
+          },
         });
         if (response.status === 401) {
           await AsyncStorage.removeItem(ACCOUNT_STORAGE_KEY);
@@ -2038,7 +2258,12 @@ function AppContent() {
           ...profile,
           token: cachedAccount.token,
         };
-        if (!isCancelled) setAccount(refreshedAccount);
+        if (!isCancelled) {
+          setAccount(refreshedAccount);
+          if (profile.dailyRewardGranted) {
+            setAppAlert({ message: 'Bonus login harian: kamu mendapatkan 1 badge!' });
+          }
+        }
       })
       .catch((error: unknown) => {
         console.error('Gagal memuat akun PETAK', error);
@@ -2073,6 +2298,103 @@ function AppContent() {
       console.error('Gagal menyimpan sesi akun PETAK', error);
     });
   }, [account]);
+
+  useEffect(() => {
+    if (!account?.token || !isProfileOpen || Platform.OS !== 'web') return;
+    let isCancelled = false;
+    setIsLoadingPushSettings(true);
+    setPushSettingsError('');
+
+    void fetchWithTimeout(`${SOCKET_URL}/api/auth/push/settings`, {
+      headers: { Authorization: `Bearer ${account.token}` },
+    })
+      .then(async (response) => {
+        const result = await response.json() as PushSettingsResponse & { error?: string };
+        if (!response.ok) throw new Error(result.error || 'Pengaturan notifikasi belum dapat dimuat.');
+        if (
+          typeof result.configured !== 'boolean' ||
+          typeof result.publicKey !== 'string' ||
+          typeof result.dailyRewardEnabled !== 'boolean' ||
+          typeof result.subscribed !== 'boolean' ||
+          typeof result.timeZone !== 'string' ||
+          !result.preferences ||
+          typeof result.preferences.dailyLogin !== 'boolean' ||
+          typeof result.preferences.leaderboard !== 'boolean' ||
+          typeof result.preferences.featureUpdates !== 'boolean'
+        ) {
+          throw new Error('Data pengaturan notifikasi tidak valid.');
+        }
+        if (!isCancelled) setPushSettings(result);
+      })
+      .catch((error: unknown) => {
+        console.error('Gagal memuat pengaturan push PETAK', error);
+        if (!isCancelled) {
+          setPushSettingsError(
+            error instanceof Error ? error.message : 'Pengaturan notifikasi belum dapat dimuat.'
+          );
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) setIsLoadingPushSettings(false);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [account?.token, isProfileOpen]);
+
+  useEffect(() => {
+    if (!account?.token) return;
+    const updateActivity = async () => {
+      if (Platform.OS === 'web' && document.visibilityState !== 'visible') return;
+      if (Platform.OS !== 'web' && AppState.currentState !== 'active') return;
+      const response = await fetchWithTimeout(`${SOCKET_URL}/api/auth/activity`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${account.token}`,
+          'X-Petak-Timezone': getLocalTimeZone(),
+        },
+      });
+      const result = await response.json() as {
+        error?: string;
+        dailyRewardGranted?: boolean;
+        badges?: number;
+      };
+      if (!response.ok) throw new Error(result.error || 'Aktivitas akun belum dapat disimpan.');
+      const currentBadges = result.badges;
+      if (typeof currentBadges === 'number' && Number.isSafeInteger(currentBadges)) {
+        setAccount((current) => current
+          ? { ...current, badges: currentBadges }
+          : current);
+      }
+      if (result.dailyRewardGranted) {
+        setAppAlert({ message: 'Bonus login harian: kamu mendapatkan 1 badge!' });
+      }
+    };
+
+    const updateActivitySafely = () => {
+      void updateActivity().catch((error: unknown) => {
+        console.error('Gagal memperbarui aktivitas akun PETAK', error);
+      });
+    };
+    const interval = setInterval(updateActivitySafely, 5 * 60_000);
+    let appStateSubscription: { remove: () => void } | null = null;
+    if (Platform.OS === 'web') {
+      document.addEventListener('visibilitychange', updateActivitySafely);
+    } else {
+      appStateSubscription = AppState.addEventListener('change', (state) => {
+        if (state === 'active') updateActivitySafely();
+      });
+    }
+
+    return () => {
+      clearInterval(interval);
+      if (Platform.OS === 'web') {
+        document.removeEventListener('visibilitychange', updateActivitySafely);
+      }
+      appStateSubscription?.remove();
+    };
+  }, [account?.token]);
 
   useEffect(() => {
     if (!account?.companionStatsEnabled || !isProfileOpen) {
@@ -2395,7 +2717,7 @@ function AppContent() {
           : room.phase === 'FINISHED' || room.phase === 'CANCELLED'
             ? 'results'
             : 'gameplay';
-    const shouldPlay = soundEnabled && pageTheme !== 'gameplay';
+    const shouldPlay = soundEnabled && backgroundMusicEnabled && pageTheme !== 'gameplay';
     const musicAsset = pageTheme === 'results' ? RESULTS_MUSIC_ASSET : MAIN_MUSIC_ASSET;
     const musicAssetName = pageTheme === 'results' ? 'Results' : 'Main';
     const musicPlayer = pageTheme === 'results' ? resultsMusicPlayer : mainMusicPlayer;
@@ -2424,7 +2746,7 @@ function AppContent() {
       mainMusicPlayer.pause();
       resultsMusicPlayer.pause();
     };
-  }, [mainMusicPlayer, resultsMusicPlayer, room?.phase, soundEnabled]);
+  }, [backgroundMusicEnabled, mainMusicPlayer, resultsMusicPlayer, room?.phase, soundEnabled]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
@@ -2533,6 +2855,12 @@ function AppContent() {
   useEffect(() => {
       if (!isProximityCaughtModalVisible) return;
 
+      if (reduceMotionEnabled) {
+        proximityExplosionScale.setValue(1);
+        proximityExplosionOpacity.setValue(1);
+        return;
+      }
+
       proximityExplosionScale.setValue(0.45);
       proximityExplosionOpacity.setValue(0);
       const animation = Animated.sequence([
@@ -2558,7 +2886,12 @@ function AppContent() {
       ]);
       animation.start();
       return () => animation.stop();
-  }, [isProximityCaughtModalVisible, proximityExplosionOpacity, proximityExplosionScale]);
+  }, [
+    isProximityCaughtModalVisible,
+    proximityExplosionOpacity,
+    proximityExplosionScale,
+    reduceMotionEnabled,
+  ]);
 
   useEffect(() => {
       if (isAccountLoading) return;
@@ -2619,6 +2952,19 @@ function AppContent() {
   ]);
 
   useEffect(() => {
+    if (connectionStatus === 'connected') {
+      setShowConnectionRecovery(false);
+      return;
+    }
+
+    const timer = setTimeout(
+      () => setShowConnectionRecovery(true),
+      CONNECTION_ISSUE_DELAY_MS
+    );
+    return () => clearTimeout(timer);
+  }, [connectionStatus]);
+
+  useEffect(() => {
     const socket = io(SOCKET_URL, {
       reconnection: true,
       autoConnect: false,
@@ -2637,6 +2983,13 @@ function AppContent() {
       }
     });
     socket.on('disconnect', () => {
+      if (landmarkTargetTimeoutRef.current) {
+        clearTimeout(landmarkTargetTimeoutRef.current);
+        landmarkTargetTimeoutRef.current = null;
+        landmarkTargetRequestKeyRef.current = null;
+        setIsLoadingLandmarkTargets(false);
+        setLandmarkTargetError('Koneksi terputus saat memuat landmark. Coba lagi setelah tersambung.');
+      }
       setConnectionStatus(socket.active ? 'reconnecting' : 'disconnected');
     });
     socket.on('connect_error', (error) => {
@@ -2662,11 +3015,20 @@ function AppContent() {
       }
     );
     socket.on('landmark:targets', (targets: LandmarkTarget[]) => {
+      if (landmarkTargetTimeoutRef.current) {
+        clearTimeout(landmarkTargetTimeoutRef.current);
+        landmarkTargetTimeoutRef.current = null;
+      }
       setRoom((current) => current ? { ...current, landmarkTargets: targets } : current);
       setLandmarkTargetError('');
       setIsLoadingLandmarkTargets(false);
     });
     socket.on('landmark:targets:error', ({ message }: { message: string }) => {
+      if (landmarkTargetTimeoutRef.current) {
+        clearTimeout(landmarkTargetTimeoutRef.current);
+        landmarkTargetTimeoutRef.current = null;
+      }
+      landmarkTargetRequestKeyRef.current = null;
       setLandmarkTargetError(message);
       setIsLoadingLandmarkTargets(false);
     });
@@ -2959,13 +3321,11 @@ function AppContent() {
 
     const requestKey = `${room.code}:${room.roundId}`;
     if (landmarkTargetRequestKeyRef.current === requestKey) return;
-    landmarkTargetRequestKeyRef.current = requestKey;
-    setIsLoadingLandmarkTargets(true);
-    setLandmarkTargetError('');
-    socketRef.current?.emit('landmark:request-targets');
+    requestLandmarkTargets();
   }, [
     activePlayer?.role,
     connectionStatus,
+    requestLandmarkTargets,
     room?.code,
     room?.landmarkTargets,
     room?.phase,
@@ -3322,7 +3682,6 @@ function AppContent() {
     if (!account || isSearchingNearbyRooms) return;
     setIsSearchingNearbyRooms(true);
     setNearbyRoomsError('');
-    setNearbyRooms([]);
     setHasSearchedNearbyRooms(true);
 
     try {
@@ -3370,6 +3729,7 @@ function AppContent() {
       setNearbyRooms(result.rooms);
     } catch (error) {
       console.error('Gagal mencari room sekitar PETAK', error);
+      setNearbyRooms([]);
       setNearbyRoomsError(
         error instanceof Error && error.name === 'AbortError'
           ? 'Server terlalu lama merespons. Coba cari lagi.'
@@ -3698,6 +4058,7 @@ function AppContent() {
         body: JSON.stringify({
           username: authUsername,
           password: authPassword,
+          timeZone: getLocalTimeZone(),
           ...(authMode === 'register' && referrerAccountId
             ? { referrerId: referrerAccountId }
             : {}),
@@ -3718,6 +4079,9 @@ function AppContent() {
       };
       await AsyncStorage.setItem(ACCOUNT_STORAGE_KEY, JSON.stringify(nextAccount));
       setAccount(nextAccount);
+      if (result.account.dailyRewardGranted) {
+        showAppAlert('Bonus login harian: kamu mendapatkan 1 badge!');
+      }
       setAuthPassword('');
     } catch (error) {
       console.error('Gagal memproses akun PETAK', error);
@@ -3730,6 +4094,143 @@ function AppContent() {
       );
     } finally {
       setIsAuthenticating(false);
+    }
+  };
+
+  const savePushPreference = async (key: keyof PushPreferences, enabled: boolean) => {
+    if (!account || !pushSettings || isSavingPushSettings) return;
+    const preferences = { ...pushSettings.preferences, [key]: enabled };
+    setIsSavingPushSettings(true);
+    setPushSettingsError('');
+    try {
+      const response = await fetchWithTimeout(`${SOCKET_URL}/api/auth/push/settings`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${account.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ preferences, timeZone: getLocalTimeZone() }),
+      });
+      const result = await response.json() as {
+        error?: string;
+        preferences?: PushPreferences;
+        timeZone?: string;
+      };
+      const savedPreferences = result.preferences;
+      const savedTimeZone = result.timeZone;
+      if (!response.ok || !savedPreferences || !savedTimeZone) {
+        throw new Error(result.error || 'Pilihan notifikasi belum dapat disimpan.');
+      }
+      setPushSettings((current) => current
+        ? { ...current, preferences: savedPreferences, timeZone: savedTimeZone }
+        : current);
+    } catch (error) {
+      console.error('Gagal memperbarui preferensi push PETAK', error);
+      setPushSettingsError(
+        error instanceof Error ? error.message : 'Pilihan notifikasi belum dapat disimpan.'
+      );
+    } finally {
+      setIsSavingPushSettings(false);
+    }
+  };
+
+  const enablePushNotifications = async () => {
+    if (!account || !pushSettings || isSavingPushSettings) return;
+    setIsSavingPushSettings(true);
+    setPushSettingsError('');
+    try {
+      if (
+        Platform.OS !== 'web' ||
+        typeof window === 'undefined' ||
+        typeof Notification === 'undefined' ||
+        !('serviceWorker' in navigator) ||
+        !('PushManager' in window) ||
+        !window.isSecureContext
+      ) {
+        throw new Error('Push tersedia di PWA melalui HTTPS dan browser yang mendukung Web Push.');
+      }
+      if (!pushSettings.configured || !pushSettings.publicKey) {
+        throw new Error('Push belum dikonfigurasi pada server. Hubungi administrator.');
+      }
+      if (!Object.values(pushSettings.preferences).some(Boolean)) {
+        throw new Error('Pilih setidaknya satu jenis notifikasi sebelum mengaktifkan push.');
+      }
+
+      const permission = Notification.permission === 'granted'
+        ? 'granted'
+        : await Notification.requestPermission();
+      if (permission !== 'granted') {
+        throw new Error('Izin notifikasi belum diberikan. Izinkan PETAK melalui pengaturan browser.');
+      }
+
+      const registration = await navigator.serviceWorker.ready;
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodePushApplicationServerKey(pushSettings.publicKey),
+        });
+      }
+      const response = await fetchWithTimeout(`${SOCKET_URL}/api/auth/push/subscriptions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${account.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          subscription: subscription.toJSON(),
+          preferences: pushSettings.preferences,
+          timeZone: getLocalTimeZone(),
+        }),
+      });
+      const result = await response.json() as { error?: string; subscribed?: boolean };
+      if (!response.ok || result.subscribed !== true) {
+        throw new Error(result.error || 'Langganan push belum dapat diaktifkan.');
+      }
+      setPushSettings((current) => current
+        ? { ...current, subscribed: true, timeZone: getLocalTimeZone() }
+        : current);
+    } catch (error) {
+      console.error('Gagal mengaktifkan push PETAK', error);
+      setPushSettingsError(
+        error instanceof Error ? error.message : 'Push belum dapat diaktifkan. Coba lagi.'
+      );
+    } finally {
+      setIsSavingPushSettings(false);
+    }
+  };
+
+  const disablePushNotifications = async () => {
+    if (!account || !pushSettings || isSavingPushSettings) return;
+    setIsSavingPushSettings(true);
+    setPushSettingsError('');
+    try {
+      let subscription: PushSubscription | null = null;
+      if (Platform.OS === 'web' && 'serviceWorker' in navigator) {
+        const registration = await navigator.serviceWorker.ready;
+        subscription = await registration.pushManager.getSubscription();
+      }
+      const response = await fetchWithTimeout(`${SOCKET_URL}/api/auth/push/subscriptions`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${account.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(subscription ? { endpoint: subscription.endpoint } : {}),
+      });
+      const result = await response.json() as { error?: string; removed?: boolean };
+      if (!response.ok || result.removed !== true) {
+        throw new Error(result.error || 'Langganan push belum dapat dinonaktifkan.');
+      }
+      if (subscription) await subscription.unsubscribe();
+      setPushSettings((current) => current ? { ...current, subscribed: false } : current);
+    } catch (error) {
+      console.error('Gagal menonaktifkan push PETAK', error);
+      setPushSettingsError(
+        error instanceof Error ? error.message : 'Push belum dapat dinonaktifkan. Coba lagi.'
+      );
+    } finally {
+      setIsSavingPushSettings(false);
     }
   };
 
@@ -4418,13 +4919,6 @@ function AppContent() {
     if (!room || room.phase !== 'PLAYING' || !isLocationInside) return;
     if (action === 'scan') setScanNotice('Memindai area sekitar...');
     socketRef.current?.emit('player-action', { action });
-  };
-  const requestLandmarkTargets = () => {
-    if (!room || !socketRef.current?.connected) return;
-    landmarkTargetRequestKeyRef.current = `${room.code}:${room.roundId}`;
-    setIsLoadingLandmarkTargets(true);
-    setLandmarkTargetError('');
-    socketRef.current.emit('landmark:request-targets');
   };
   const seekerScanCount = room?.seekerScanCount ?? 0;
   const canUseSeekerScan =
@@ -5328,10 +5822,15 @@ function AppContent() {
           }
           ListEmptyComponent={
             isLeaderboardLoading ? (
-              <ActivityIndicator
-                color={isLightTheme ? '#42610f' : '#c3f36b'}
-                style={styles.leaderboardLoading}
-              />
+              <View accessibilityLiveRegion="polite" style={styles.leaderboardLoading}>
+                {!reduceMotionEnabled ? (
+                  <ActivityIndicator
+                    color={isLightTheme ? '#42610f' : '#c3f36b'}
+                    size="small"
+                  />
+                ) : null}
+                <Text style={styles.mutedText}>Memuat papan peringkat...</Text>
+              </View>
             ) : leaderboardError ? (
               <Text style={styles.connectionOffline}>{leaderboardError}</Text>
             ) : (
@@ -5681,6 +6180,12 @@ function AppContent() {
 
   const isProfileSubpage =
     isCharacterSettingsOpen || isThemeSettingsOpen || isInviteFriendsOpen;
+  const isWebPushSupported = Platform.OS === 'web' &&
+    typeof window !== 'undefined' &&
+    typeof Notification !== 'undefined' &&
+    'serviceWorker' in navigator &&
+    'PushManager' in window &&
+    window.isSecureContext;
   const profileModal = (
     <Modal
       visible={isProfileOpen && Boolean(account)}
@@ -6492,6 +6997,131 @@ function AppContent() {
                 </View>
               ) : null}
             </View>
+            <View style={styles.profileSectionHeader}>
+              <Text style={styles.profileSectionTitle}>Audio</Text>
+              <Text style={styles.profileSectionMeta}>PREFERENSI PERANGKAT</Text>
+            </View>
+            <View style={styles.profileCompanionPrivacyCard}>
+              <Pressable
+                accessibilityRole="switch"
+                accessibilityLabel="Musik latar"
+                accessibilityState={{ checked: backgroundMusicEnabled }}
+                style={styles.profileCompanionPrivacyToggle}
+                onPress={toggleBackgroundMusic}
+              >
+                <View style={styles.profileCompanionPrivacyCopy}>
+                  <Text style={styles.profileCompanionPrivacyTitle}>Musik latar</Text>
+                  <Text style={styles.profileCompanionPrivacyHint}>
+                    Putar musik di halaman utama, lobby, dan hasil permainan.
+                  </Text>
+                </View>
+                <Text
+                  style={[
+                    styles.profileCompanionPrivacyState,
+                    backgroundMusicEnabled && styles.profileCompanionPrivacyStateEnabled,
+                  ]}
+                >
+                  {backgroundMusicEnabled ? 'AKTIF' : 'MATI'}
+                </Text>
+              </Pressable>
+            </View>
+            {Platform.OS === 'web' ? (
+              <>
+                <View style={styles.profileSectionHeader}>
+                  <Text style={styles.profileSectionTitle}>Notifikasi push</Text>
+                  <Text style={styles.profileSectionMeta}>PWA</Text>
+                </View>
+                <View style={styles.profileCompanionPrivacyCard}>
+                  <Text style={styles.profileCompanionPrivacyDisclosure}>
+                    Pengingat bermain dikirim pukul 20.00 hari kerja atau 21.00 akhir pekan, sesuai zona waktu perangkat, hanya jika akun belum aktif hari itu. {pushSettings?.dailyRewardEnabled === false ? 'Hadiah badge login harian sedang nonaktif.' : 'Kunjungan pertama setiap hari lokal memberi 1 badge.'}
+                  </Text>
+                  {([
+                    ['dailyLogin', 'Ajakan bermain & badge harian'],
+                    ['leaderboard', 'Perubahan leaderboard'],
+                    ['featureUpdates', 'Fitur baru & pembaruan'],
+                  ] as const).map(([key, title]) => (
+                    <Pressable
+                      key={key}
+                      accessibilityRole="switch"
+                      accessibilityLabel={title}
+                      accessibilityState={{
+                        checked: pushSettings?.preferences[key] === true,
+                        disabled: isSavingPushSettings || !pushSettings,
+                      }}
+                      disabled={isSavingPushSettings || !pushSettings}
+                      style={styles.profileCompanionPrivacyToggle}
+                      onPress={() => {
+                        if (!pushSettings) return;
+                        void savePushPreference(key, !pushSettings.preferences[key]);
+                      }}
+                    >
+                      <View style={styles.profileCompanionPrivacyCopy}>
+                        <Text style={styles.profileCompanionPrivacyTitle}>{title}</Text>
+                      </View>
+                      <Text
+                        style={[
+                          styles.profileCompanionPrivacyState,
+                          pushSettings?.preferences[key] && styles.profileCompanionPrivacyStateEnabled,
+                        ]}
+                      >
+                        {pushSettings?.preferences[key] ? 'AKTIF' : 'MATI'}
+                      </Text>
+                    </Pressable>
+                  ))}
+                  {isLoadingPushSettings ? (
+                    <ActivityIndicator
+                      color={isLightTheme ? '#42610f' : '#c3f36b'}
+                      size="small"
+                    />
+                  ) : null}
+                  {pushSettings && !pushSettings.configured ? (
+                    <Text style={styles.profileCompanionPrivacyError}>
+                      Push belum dikonfigurasi pada server.
+                    </Text>
+                  ) : null}
+                  {!isWebPushSupported ? (
+                    <Text style={styles.profileCompanionPrivacyDisclosure}>
+                      Browser ini tidak mendukung push atau halaman belum dibuka melalui HTTPS. Di iPhone/iPad, instal PETAK ke Home Screen dan buka sebagai PWA.
+                    </Text>
+                  ) : null}
+                  {pushSettingsError ? (
+                    <Text accessibilityRole="alert" style={styles.profileCompanionPrivacyError}>
+                      {pushSettingsError}
+                    </Text>
+                  ) : null}
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={
+                      isSavingPushSettings ||
+                      isLoadingPushSettings ||
+                      !pushSettings ||
+                      !pushSettings.configured ||
+                      !isWebPushSupported
+                    }
+                    style={[
+                      styles.profileCharacterSettingsButton,
+                      (isSavingPushSettings || !pushSettings?.configured || !isWebPushSupported) &&
+                        styles.disabledButton,
+                    ]}
+                    onPress={() => {
+                      if (pushSettings?.subscribed) void disablePushNotifications();
+                      else void enablePushNotifications();
+                    }}
+                  >
+                    {isSavingPushSettings ? (
+                      <ActivityIndicator
+                        color={isLightTheme ? '#42610f' : '#c3f36b'}
+                        size="small"
+                      />
+                    ) : (
+                      <Text style={styles.profileCharacterSettingsTitle}>
+                        {pushSettings?.subscribed ? 'Nonaktifkan push' : 'Aktifkan push'}
+                      </Text>
+                    )}
+                  </Pressable>
+                </View>
+              </>
+            ) : null}
             <View style={styles.profileSectionHeader}>
               <Text style={styles.profileSectionTitle}>Tampilan</Text>
               <Text style={styles.profileSectionMeta}>PREFERENSI PERANGKAT</Text>
@@ -8313,7 +8943,18 @@ function AppContent() {
                   </Pressable>
                 </>
               ) : isLoadingLandmarkTargets ? (
-                <Text style={styles.mutedText}>Memuat landmark OpenStreetMap...</Text>
+                <View
+                  accessibilityLiveRegion="polite"
+                  style={[styles.loadingButtonContent, styles.landmarkLoading]}
+                >
+                  {!reduceMotionEnabled ? (
+                    <ActivityIndicator
+                      color={isLightTheme ? '#42610f' : '#c3f36b'}
+                      size="small"
+                    />
+                  ) : null}
+                  <Text style={styles.mutedText}>Memuat landmark OpenStreetMap...</Text>
+                </View>
               ) : room.landmarkTargets?.length ? (
                 room.landmarkTargets.map((target) => {
                   const submission = landmarkSubmissionStatuses[target.id];
@@ -9174,6 +9815,14 @@ function AppContent() {
     );
   };
 
+  if (isStartupLoading && !isStartupHeroVisible) {
+    return (
+      <SafeAreaView style={styles.startupLoadingScreen}>
+        <StatusBar hidden animated={Platform.OS !== 'android'} style="light" />
+      </SafeAreaView>
+    );
+  }
+
   if (isStartupLoading) {
     return (
       <SafeAreaView style={styles.startupLoadingScreen}>
@@ -9183,24 +9832,57 @@ function AppContent() {
           style={isLightTheme ? 'dark' : 'light'}
         />
         <View style={styles.startupLoadingContent}>
-          <Animated.Image
-            accessibilityLabel="Logo PETAK"
-            source={require('./assets/logo-splash.png')}
-            resizeMode="contain"
-            style={[
-              styles.startupLoadingLogo,
-              {
-                opacity: startupLogoOpacity,
-                transform: [{ scale: startupLogoScale }],
-              },
-            ]}
-          />
-          <Text style={styles.startupLoadingTitle}>PETAK</Text>
-          <ActivityIndicator
-            color={isLightTheme ? '#42610f' : '#c3f36b'}
-            size="small"
-          />
-          <Text style={styles.startupLoadingMessage}>Memeriksa sesi akun...</Text>
+          <View style={styles.startupLoadingEyebrow}>
+            <View style={styles.startupLoadingSignal} />
+            <Text style={styles.startupLoadingEyebrowText}>ARENA MULTIPEMAIN · LIVE</Text>
+          </View>
+          <View style={styles.startupLoadingHero}>
+            <Animated.Image
+              accessibilityLabel="Logo PETAK"
+              source={require('./assets/logo-splash.png')}
+              resizeMode="contain"
+              style={[
+                styles.startupLoadingLogo,
+                {
+                  opacity: startupLogoOpacity,
+                  transform: [{ scale: startupLogoScale }],
+                },
+              ]}
+            />
+            <Animated.Image
+              accessibilityLabel={`AI Companion ${homeHeroCompanion.name}`}
+              source={
+                Platform.OS === 'web'
+                  ? homeHeroCompanion.animatedImage
+                  : homeHeroCompanion.image
+              }
+              resizeMode="contain"
+              style={[
+                styles.startupLoadingCharacter,
+                {
+                  transform: [
+                    {
+                      translateY: startupCharacterFloat.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [4, -4],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            />
+          </View>
+          <Text style={styles.startupLoadingTitle}>MENYIAPKAN ARENA</Text>
+          <Text style={styles.startupLoadingSubtitle}>Sembunyi. Bergerak. Bertahan.</Text>
+          {!reduceMotionEnabled ? (
+            <ActivityIndicator
+              color={isLightTheme ? '#42610f' : '#c3f36b'}
+              size="small"
+            />
+          ) : null}
+          <Text accessibilityLiveRegion="polite" style={styles.startupLoadingMessage}>
+            {isAccountLoading ? 'Memeriksa sesi akun...' : 'Menyiapkan preferensi perangkat...'}
+          </Text>
         </View>
       </SafeAreaView>
     );
@@ -9328,19 +10010,43 @@ function AppContent() {
                 ) : null}
               </View>
             </View>
-            <View style={[styles.homeHeroVisuals, isAuthScreen && styles.authHeroVisuals]}>
-              <View style={styles.homeHeroLogoFrame}>
+            <View
+              style={[
+                styles.homeHeroVisuals,
+                isAuthScreen && styles.authHeroVisuals,
+                isAuthScreen && { gap: 16 * authHeroVisualScale },
+              ]}
+            >
+              <View
+                style={[
+                  styles.homeHeroLogoFrame,
+                  isAuthScreen && {
+                    width: 96 * authHeroVisualScale,
+                    height: 96 * authHeroVisualScale,
+                  },
+                ]}
+              >
                 <Image
                   accessibilityLabel="Logo PETAK UMPET +62"
                   source={require('./assets/logo.png')}
                   resizeMode="contain"
-                  style={styles.homeHeroLogo}
+                  style={[
+                    styles.homeHeroLogo,
+                    isAuthScreen && {
+                      width: 90 * authHeroVisualScale,
+                      height: 90 * authHeroVisualScale,
+                    },
+                  ]}
                 />
               </View>
               <Animated.View
                 style={[
                   styles.homeHeroCharacterFrame,
                   isAuthScreen && styles.authHeroCharacterFrame,
+                  isAuthScreen && {
+                    width: 156 * authHeroVisualScale,
+                    height: 172 * authHeroVisualScale,
+                  },
                   {
                     borderColor: isAuthScreen ? '#fbbf24' : '#38bdf8',
                     backgroundColor: '#10283a',
@@ -9396,6 +10102,58 @@ function AppContent() {
               </Text>
             </View>
           </Animated.View>
+        ) : null}
+        {showConnectionRecovery &&
+        connectionStatus !== 'connected' &&
+        !isLiveMapScreen &&
+        !isScannerOpen ? (
+          <View
+            accessibilityLiveRegion="polite"
+            style={[
+              styles.connectionRecoveryBanner,
+              connectionStatus === 'disconnected' && styles.connectionRecoveryBannerOffline,
+            ]}
+          >
+            <View style={styles.connectionRecoveryCopy}>
+              <Text style={styles.connectionRecoveryTitle}>
+                Koneksi ke server PETAK
+              </Text>
+              <Text style={styles.connectionRecoveryMessage}>
+                {connectionStatus === 'disconnected'
+                  ? 'Server belum terhubung. Periksa jaringan atau coba sambungkan ulang.'
+                  : connectionStatus === 'reconnecting'
+                    ? 'Koneksi terganggu. Sedang mencoba menyambungkan ulang.'
+                    : 'Menghubungkan ke server permainan...'}
+              </Text>
+            </View>
+            {connectionStatus === 'disconnected' ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Coba sambungkan ulang ke server PETAK"
+                style={styles.connectionRecoveryButton}
+                onPress={() => {
+                  const socket = socketRef.current;
+                  if (!socket) {
+                    showAppAlert('Koneksi backend belum siap. Coba lagi sebentar.');
+                    return;
+                  }
+                  socket.disconnect();
+                  setConnectionStatus('connecting');
+                  socket.connect();
+                }}
+              >
+                <Text style={styles.connectionRecoveryButtonText}>Coba lagi</Text>
+              </Pressable>
+            ) : !reduceMotionEnabled ? (
+              <View style={styles.connectionRecoveryActions}>
+                <ActivityIndicator
+                  accessibilityLabel="Menghubungkan ke server PETAK"
+                  color={isLightTheme ? '#b45309' : '#fbbf24'}
+                  size="small"
+                />
+              </View>
+            ) : null}
+          </View>
         ) : null}
         {account && authError && !room ? (
           <Text accessibilityLiveRegion="polite" style={styles.connectionOffline}>
@@ -9651,6 +10409,11 @@ function AppContent() {
               </Text>
               <Pressable
                 accessibilityRole="button"
+                accessibilityLabel={
+                  isSearchingNearbyRooms
+                    ? 'Sedang memeriksa lokasi dan mencari room sekitar'
+                    : 'Cari room sekitar dalam radius 3 kilometer'
+                }
                 accessibilityState={{ busy: isSearchingNearbyRooms }}
                 disabled={isSearchingNearbyRooms}
                 style={[
@@ -9660,15 +10423,32 @@ function AppContent() {
                 onPress={() => void searchNearbyRooms()}
               >
                 {isSearchingNearbyRooms ? (
-                  <ActivityIndicator color="#ecfeff" size="small" />
+                  <View style={styles.loadingButtonContent}>
+                    {!reduceMotionEnabled ? (
+                      <ActivityIndicator color="#ecfeff" size="small" />
+                    ) : null}
+                    <Text style={styles.nearbyRoomSearchText}>
+                      Memeriksa GPS dan mencari room...
+                    </Text>
+                  </View>
                 ) : (
                   <Text style={styles.nearbyRoomSearchText}>Cari room sekitar · 3 km</Text>
                 )}
               </Pressable>
               {nearbyRoomsError ? (
-                <Text accessibilityLiveRegion="polite" style={styles.nearbyRoomError}>
-                  {nearbyRoomsError}
-                </Text>
+                <>
+                  <Text accessibilityLiveRegion="polite" style={styles.nearbyRoomError}>
+                    {nearbyRoomsError}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Coba cari room sekitar lagi"
+                    style={styles.nearbyRoomRetryButton}
+                    onPress={() => void searchNearbyRooms()}
+                  >
+                    <Text style={styles.nearbyRoomRetryText}>Coba lagi</Text>
+                  </Pressable>
+                </>
               ) : null}
               {!isSearchingNearbyRooms && hasSearchedNearbyRooms && !nearbyRoomsError &&
               nearbyRooms.length === 0 ? (
@@ -9807,6 +10587,9 @@ function createStyles(isLightTheme: boolean) {
     borderWidth: 1,
     borderRadius: 999,
   },
+  pageBackdropDecorations: {
+    overflow: 'hidden',
+  },
   pageBackdropRingLarge: {
     width: 310,
     height: 310,
@@ -9836,18 +10619,53 @@ function createStyles(isLightTheme: boolean) {
   },
   startupLoadingContent: {
     alignItems: 'center',
-    gap: 14,
-    padding: 28,
+    gap: 12,
+    padding: 24,
+  },
+  startupLoadingEyebrow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  startupLoadingSignal: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#f59e0b',
+  },
+  startupLoadingEyebrowText: {
+    color: '#fbbf24',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1.1,
+  },
+  startupLoadingHero: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginVertical: 6,
   },
   startupLoadingLogo: {
-    width: 210,
-    height: 192,
+    width: 136,
+    height: 132,
+  },
+  startupLoadingCharacter: {
+    width: 136,
+    height: 152,
   },
   startupLoadingTitle: {
     color: '#f8fafc',
-    fontSize: 24,
+    fontSize: 18,
     fontWeight: '900',
-    letterSpacing: 4,
+    letterSpacing: 1.5,
+    textAlign: 'center',
+  },
+  startupLoadingSubtitle: {
+    color: '#b8f5df',
+    fontSize: 14,
+    fontWeight: '800',
+    textAlign: 'center',
   },
   startupLoadingMessage: {
     color: '#9db0c4',
@@ -10519,6 +11337,52 @@ function createStyles(isLightTheme: boolean) {
   connectionOffline: {
     color: '#ffb454',
     marginBottom: 14,
+  },
+  connectionRecoveryBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    marginBottom: 16,
+    backgroundColor: isLightTheme ? '#fff7ed' : '#2b2116',
+    borderWidth: 1,
+    borderColor: isLightTheme ? '#fdba74' : '#854d0e',
+    borderRadius: 14,
+  },
+  connectionRecoveryBannerOffline: {
+    backgroundColor: isLightTheme ? '#fef2f2' : '#321b20',
+    borderColor: isLightTheme ? '#fca5a5' : '#9f3948',
+  },
+  connectionRecoveryCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  connectionRecoveryTitle: {
+    color: isLightTheme ? '#7c2d12' : '#fde68a',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  connectionRecoveryMessage: {
+    color: isLightTheme ? '#475569' : '#d6c6a9',
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  connectionRecoveryActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  connectionRecoveryButton: {
+    minHeight: 40,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    backgroundColor: isLightTheme ? '#ffedd5' : '#713f12',
+    borderRadius: 10,
+  },
+  connectionRecoveryButtonText: {
+    color: isLightTheme ? '#7c2d12' : '#fef3c7',
+    fontSize: 11,
+    fontWeight: '900',
   },
   profileModalContainer: {
     flex: 1,
@@ -11587,6 +12451,8 @@ function createStyles(isLightTheme: boolean) {
     color: '#ecfeff',
   },
   leaderboardLoading: {
+    alignItems: 'center',
+    gap: 10,
     paddingVertical: 16,
   },
   leaderboardEmpty: {
@@ -12795,6 +13661,10 @@ function createStyles(isLightTheme: boolean) {
     fontSize: 12,
     lineHeight: 18,
   },
+  landmarkLoading: {
+    justifyContent: 'flex-start',
+    paddingVertical: 8,
+  },
   nearbyRoomSearchButton: {
     minHeight: 44,
     alignItems: 'center',
@@ -12814,6 +13684,15 @@ function createStyles(isLightTheme: boolean) {
     color: '#ffb454',
     fontSize: 12,
     lineHeight: 18,
+  },
+  nearbyRoomRetryButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+  },
+  nearbyRoomRetryText: {
+    color: isLightTheme ? '#075985' : '#67e8f9',
+    fontSize: 12,
+    fontWeight: '900',
   },
   nearbyRoomEmpty: {
     color: '#9db0c4',
@@ -14385,7 +15264,9 @@ function createStyles(isLightTheme: boolean) {
   const lightThemeOverrides = StyleSheet.create({
         container: { backgroundColor: 'transparent' },
         startupLoadingScreen: { backgroundColor: '#f8fafc' },
+        startupLoadingEyebrowText: { color: '#92400e' },
         startupLoadingTitle: { color: '#0f172a' },
+        startupLoadingSubtitle: { color: '#166534' },
         startupLoadingMessage: { color: '#475569' },
         title: { color: '#0f172a' },
         subtitle: { color: '#475569' },

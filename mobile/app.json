@@ -48,7 +48,7 @@
       "lang": "id",
       "themeColor": "#0c111b",
       "backgroundColor": "#0c111b",
-      "display": "standalone",
+      "display": "fullscreen",
       "startUrl": "/",
       "scope": "/",
       "favicon": "./public/icons/favicon-32.png"
@@ -98,6 +98,12 @@
         {
           "hidden": true,
           "style": "light"
+        }
+      ],
+      [
+        "expo-navigation-bar",
+        {
+          "hidden": true
         }
       ]
     ]

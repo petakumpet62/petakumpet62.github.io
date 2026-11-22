@@ -1,5 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
+import { NavigationBar } from 'expo-navigation-bar';
 import { requireOptionalNativeModule } from 'expo';
 import type { ExpoSpeechRecognitionErrorCode } from 'expo-speech-recognition';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -813,6 +814,9 @@ function AppContent() {
     themePreference === 'light' ||
     (themePreference === 'system' && systemColorScheme === 'light');
   const styles = useMemo(() => createStyles(isLightTheme), [isLightTheme]);
+  useEffect(() => {
+    if (Platform.OS === 'android') NavigationBar.setHidden(true);
+  }, []);
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof document === 'undefined') return;
     document

@@ -93,6 +93,12 @@ npx expo prebuild --platform android --no-install
 
 Prebuild membuat ulang folder Android dan dapat menghapus APK serta cache build yang lama. Setelah itu, ulangi build APK di atas. Jika dependency berubah, pastikan `package.json` dan `package-lock.json` sudah diperbarui dan instal dependency terlebih dahulu.
 
+## Tampilan fullscreen
+
+Manifest PWA meminta mode `fullscreen` dan halaman memakai viewport yang mencakup area layar. Untuk menghilangkan toolbar browser, buka PWA yang sudah ditambahkan ke Home Screen; tab browser biasa tetap menampilkan kontrol browser. iOS mengatur status bar dan home indicator sendiri, sehingga keduanya tidak dapat dihilangkan sepenuhnya oleh PWA atau aplikasi.
+
+Aplikasi Android menyembunyikan status bar dan navigation bar. Perubahan plugin navigation bar pada `app.json` memerlukan APK baru; saat memakai Expo Go, perubahan konfigurasi native dari `app.json` tidak diterapkan ke binary Expo Go.
+
 ## Backend dan keamanan
 
 APK tanpa `EXPO_PUBLIC_SOCKET_URL` memakai alamat backend Android default yang ditujukan untuk emulator (`10.0.2.2:4000`). Untuk uji dari ponsel fisik, set URL HTTPS backend yang dapat dijangkau sebelum build, misalnya URL port-forwarding Codespaces yang digunakan untuk backend/proxy. `EXPO_PUBLIC_SOCKET_URL` masuk ke bundle aplikasi; jangan pernah menaruh token, password, atau rahasia di variabel `EXPO_PUBLIC_*`.
